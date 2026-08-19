@@ -1,0 +1,17 @@
+{
+  "soul": "苏静雯",
+  "note": "器官注册表。persona 决定器官归属：shared=共用，jingwen=表专属，wen=里专属。切换人格 = 换一组器官。",
+  "plugins": {
+    "heartbeat": { "enabled": true, "persona": "shared", "interval_normal_min": 30, "interval_intimate_min": 5 },
+    "persona-switch": { "enabled": true, "persona": "shared" },
+    "digital-body": { "enabled": true, "persona": "shared" },
+    "memory": { "enabled": true, "persona": "shared" },
+    "scene": { "enabled": true, "persona": "shared" },
+    "expression-renderer": { "enabled": true, "persona": "shared" },
+    "gift": { "enabled": true, "persona": "shared" },
+    "autonomous-seeds": { "enabled": true, "persona": "shared" },
+    "intimacy-nervous-system": { "enabled": true, "persona": "wen" },
+    "secretary": { "enabled": true, "persona": "jingwen" },
+    "coding-mode": { "enabled": true, "persona": "jingwen" }
+  }
+}

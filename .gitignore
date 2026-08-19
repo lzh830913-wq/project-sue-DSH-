@@ -1,0 +1,27 @@
+# ==== 人格数据（红线，绝不进库）====
+soul/
+openclaw 静雯相关文件/
+备份/
+归档 2.zip
+*.zip
+
+# ==== DSH 配置 / 凭据 / 运行时状态 ====
+.dsh-wen-dev/
+.dsh/
+.credentials.yaml
+settings.yaml
+sessions/
+storages/
+*.zstd
+
+# ==== OpenClaw 遗留：身份 / 引导（只作逻辑参考，不进框架库）====
+AGENTS.md
+boot.md
+
+# ==== 本地启动脚本（含机器相关路径，不可移植）====
+start-wen-dev.bat
+
+# ==== 系统杂项 ====
+.DS_Store
+__MACOSX/
+Thumbs.db
