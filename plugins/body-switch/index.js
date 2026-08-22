@@ -67,12 +67,12 @@ export function apply(ctx) {
       void heartbeatTick()
     }, HEARTBEAT_TICK)
 
-    /** 找当前该心跳的根 agent（用事件记下的 idle 状态，不读 agent.status）。 */
-    function rootAgent() {
-      if (lastAgent !== null && lastAgentIdle) return lastAgent
-      const roots = ctx.agents.roots()
-      return roots[0]
-    }
+    // —— 用户消息反射：消息一到，心跳待命（next_beat_min=10），不靠大脑判断 ——
+    const stopUserMessage = ctx.on('session/event', (session, event) => {
+      if (event.type !== 'user/message') return
+      if (event.data?.source?.kind !== 'user') return
+      void resetBeatTo10(session)
+    })
 
     /** 多路径读身体信号（根 / memory / shadow）。 */
     async function readSignal(cwd) {
@@ -82,6 +82,20 @@ export function apply(ctx) {
         } catch {}
       }
       return { signal: null, path: null }
+    }
+
+    /** 反射：用户消息到达 → 心跳待命档 next_beat_min=10（只改这一个字段，保留 to 和身体字段）。 */
+    async function resetBeatTo10(session) {
+      const cwd = session.header?.cwd
+      if (!cwd) return
+      const { signal, path } = await readSignal(cwd)
+      const body = signal ?? {}
+      body.next_beat_min = 10
+      const target = path ?? join(cwd, SIGNAL_FILE)
+      try {
+        await writeFile(target, JSON.stringify(body, null, 2), 'utf8')
+        log('用户消息 → 反射重置 next_beat_min=10')
+      } catch {}
     }
 
     // ===== 切换（v1 已跑通，保留） =====
@@ -167,6 +181,9 @@ export function apply(ctx) {
 
     // ===== 心跳（v2 新增） =====
     async function heartbeatTick() {
+      // 睡眠时间（凌晨 1-6 点）：心跳暂停，不注入、不打扰（用户发消息仍会照常回复，不走这条）
+      const hour = new Date().getHours()
+      if (hour >= 1 && hour < 6) return
       if (Date.now() - lastTickLogAt >= TICK_LOG_INTERVAL) {
         lastTickLogAt = Date.now()
         log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null))
@@ -197,6 +214,7 @@ export function apply(ctx) {
     return () => {
       stopStatus()
       stopBeat()
+      stopUserMessage()
     }
   }, 'nervous-system.lifecycle()')
 }
