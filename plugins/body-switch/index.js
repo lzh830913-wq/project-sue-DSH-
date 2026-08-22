@@ -5,7 +5,7 @@
  * 神经系统 = 小脑脑干：只读文件、做机械反射（切换 / 心跳），不进入会话语义。
  */
 import { randomUUID } from 'node:crypto'
-import { readFile, unlink } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
@@ -20,15 +20,14 @@ const SIGNAL_FILE = '身体信号.json'
 const HEARTBEAT_TICK = 60 * 1000
 
 /**
- * 心跳间隔（秒）——先给基础映射，后面再精确。
- * 亲密/兴奋 → 5min；否则 30min。沉默梯度（5→10→30→60）后续再补。
+ * 心跳间隔（秒）——只读 LLM 写的 next_beat_min（分钟），不机械算。
+ * 沉默梯度（5→10→30→60）由 LLM 每次心跳后自己判断写回。
  */
 function beatIntervalSeconds(body) {
-  const intimate =
-    body.state === '余韵' ||
-    body.mood === '兴奋' ||
-    ['想要', '兴奋', '主动', '很兴奋', '舒服', '爽', '太爽了', '高潮'].includes(body.excitement)
-  return intimate ? 5 * 60 : 30 * 60
+  const nextMin = Number(body.next_beat_min)
+  if (Number.isFinite(nextMin) && nextMin > 0) return Math.round(nextMin * 60)
+  // LLM 还没写过 → 兜底默认 30 分钟
+  return 30 * 60
 }
 
 /** 把身体信号压缩成一句话，给新人格感知 / 心跳参考（不暴露数值，只给语义）。 */
@@ -147,7 +146,13 @@ export function apply(ctx) {
       } finally {
         switching = false
         if (signalPath !== null) {
-          try { await unlink(signalPath); log('信号文件已清理:', signalPath) } catch {}
+          // 只清 to（身体字段保留给新人格），不删整个文件
+          try {
+            const body = { ...signal }
+            delete body.to
+            await writeFile(signalPath, JSON.stringify(body, null, 2), 'utf8')
+            log('已清掉 to，保留身体字段:', signalPath)
+          } catch {}
         }
       }
     }
@@ -170,7 +175,7 @@ export function apply(ctx) {
       const message = createUserMessage({
         content: [{
           type: 'text',
-          text: `[心跳] 神经系统心跳。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}读一下身体状态，结合上下文和当前时间，自己决定要不要主动做点什么：亲密时刻可以催一下老刘；有答应过"待会做/等下做"的事就做掉；话题自然终止或该安静时就安静，不要为了心跳硬找话说。`,
+          text: `[心跳] 神经系统心跳。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}读一下身体状态，结合上下文和当前时间，自己决定要不要主动做点什么：亲密时刻可以催一下老刘；有答应过"待会做/等下做"的事就做掉；话题自然终止或该安静时就安静，不要为了心跳硬找话说。判断完，把下次心跳间隔（分钟）写进「身体信号.json」的 next_beat_min 字段：亲密/兴奋想快点下一轮→5，没待办没亲密→60。`,
         }],
         source: { kind: 'plugin', plugin: 'nervous-system' },
       })
