@@ -25,3 +25,12 @@ start-wen-dev.bat
 .DS_Store
 __MACOSX/
 Thumbs.db
+
+# ==== 私人聊天记录（老刘↔Mac静雯，红线，绝不进库）====
+2026-*-*.md
+
+# ==== 论文（走 Zenodo 发布，不进框架库）====
+*.docx
+
+# ==== 心跳运行时状态（last_tick_at 每 30 分钟跳一次，不进库）====
+plugins/heartbeat/state.json
