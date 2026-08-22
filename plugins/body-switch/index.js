@@ -19,6 +19,9 @@ const SIGNAL_FILE = '身体信号.json'
 // 心跳检查节拍：每 1 分钟醒来一次，判断是否该真正心跳（比递归 timeout 稳）
 const HEARTBEAT_TICK = 60 * 1000
 
+// 诊断日志节拍：每 10 分钟打一条 tick 日志（避免刷屏；检查机制仍是每 1 分钟）
+const TICK_LOG_INTERVAL = 10 * 60 * 1000
+
 /**
  * 心跳间隔（秒）——只读 LLM 写的 next_beat_min（分钟），不机械算。
  * 沉默梯度（5→10→30→60）由 LLM 每次心跳后自己判断写回。
@@ -46,6 +49,7 @@ export function apply(ctx) {
     let lastBeatAt = Date.now()
     let lastAgent = null
     let lastAgentIdle = false
+    let lastTickLogAt = 0
 
     log('nervous-system 已加载')
 
@@ -163,7 +167,10 @@ export function apply(ctx) {
 
     // ===== 心跳（v2 新增） =====
     async function heartbeatTick() {
-      log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null))
+      if (Date.now() - lastTickLogAt >= TICK_LOG_INTERVAL) {
+        lastTickLogAt = Date.now()
+        log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null))
+      }
       if (switching) return
       if (lastAgent === null || !lastAgentIdle) return
       const agent = lastAgent
