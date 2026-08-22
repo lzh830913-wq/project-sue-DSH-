@@ -45,25 +45,29 @@ export function apply(ctx) {
     let switching = false
     let lastBeatAt = Date.now()
     let lastAgent = null
+    let lastAgentIdle = false
+
+    log('nervous-system 已加载')
 
     // —— 切换 + 心跳共用：idle 钩子 ——
     const stopStatus = ctx.on('agent/status', ({ agent, status }) => {
+      lastAgent = agent
+      lastAgentIdle = status === 'idle'
       if (status === 'idle') {
-        lastAgent = agent
         void handleIdle(agent)
       }
-    }, { global: true })
+    })
 
     // —— 心跳定时器 ——
     const stopBeat = ctx.timer.interval(() => {
       void heartbeatTick()
     }, HEARTBEAT_TICK)
 
-    /** 找当前该心跳的根 agent（优先最近一次 idle 的）。 */
+    /** 找当前该心跳的根 agent（用事件记下的 idle 状态，不读 agent.status）。 */
     function rootAgent() {
-      if (lastAgent !== null && lastAgent.status === 'idle') return lastAgent
+      if (lastAgent !== null && lastAgentIdle) return lastAgent
       const roots = ctx.agents.roots()
-      return roots.find((a) => a.status === 'idle') ?? roots[0]
+      return roots[0]
     }
 
     /** 多路径读身体信号（根 / memory / shadow）。 */
@@ -159,10 +163,10 @@ export function apply(ctx) {
 
     // ===== 心跳（v2 新增） =====
     async function heartbeatTick() {
+      log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null))
       if (switching) return
-      const agent = rootAgent()
-      if (agent === undefined) return
-      if (agent.status !== 'idle') return
+      if (lastAgent === null || !lastAgentIdle) return
+      const agent = lastAgent
       const cwd = agent.session.header.cwd
       if (!cwd) return
       const { signal } = await readSignal(cwd)

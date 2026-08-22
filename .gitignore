@@ -34,3 +34,7 @@ Thumbs.db
 
 # ==== 心跳运行时状态（last_tick_at 每 30 分钟跳一次，不进库）====
 plugins/heartbeat/state.json
+
+# ==== 伴侣 preset 的真实人格（红线：表里设定 + 触发词 + 真实名字，不进库）====
+# 干净框架那步会做一个「抽掉真实人格的模板版」进库；真实人格只留在部署侧
+presets/companion/agent.cordis.yml
