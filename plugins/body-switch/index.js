@@ -94,8 +94,9 @@ export function apply(ctx) {
       const target = path ?? join(cwd, SIGNAL_FILE)
       try {
         await writeFile(target, JSON.stringify(body, null, 2), 'utf8')
-        log('用户消息 → 反射重置 next_beat_min=10')
+        log('用户消息 → 反射重置 next_beat_min=10 + 心跳计时重置')
       } catch {}
+      lastBeatAt = Date.now() // 说话那一刻，心跳倒计时重新起算——正在聊永远不被心跳打断
     }
 
     // ===== 切换（v1 已跑通，保留） =====
@@ -163,6 +164,7 @@ export function apply(ctx) {
         })
         child.followup(message)
         log('已 followup 唤醒子 agent')
+        lastBeatAt = Date.now() // 切换完成 → 新人格从这一刻重新起算，不补跳
       } catch (error) {
         log('切换失败:', error instanceof Error ? error.message : String(error))
       } finally {
@@ -181,9 +183,7 @@ export function apply(ctx) {
 
     // ===== 心跳（v2 新增） =====
     async function heartbeatTick() {
-      // 睡眠时间（凌晨 1-6 点）：心跳暂停，不注入、不打扰（用户发消息仍会照常回复，不走这条）
-      const hour = new Date().getHours()
-      if (hour >= 1 && hour < 6) return
+      // （凌晨 1-6 点机械暂停已删——兜底权归手机闹钟，心跳是纯起搏器）
       if (Date.now() - lastTickLogAt >= TICK_LOG_INTERVAL) {
         lastTickLogAt = Date.now()
         log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null))
@@ -196,19 +196,25 @@ export function apply(ctx) {
       const { signal } = await readSignal(cwd)
       const body = signal ?? {}
       const interval = beatIntervalSeconds(body)
-      if (Date.now() - lastBeatAt < interval * 1000) return
+      const elapsed = Date.now() - lastBeatAt
+      if (elapsed < interval * 1000) return
+      // 时间跳跃检测：距上次心跳超过 30 分钟 = 世界冻结过（电脑休眠/长时间关机）
+      const frozen = elapsed > 30 * 60 * 1000
       lastBeatAt = Date.now()
 
       const bodyNote = describeBody(body)
+      const seedText = frozen
+        ? `[唤醒] 你刚从一次长时间冻结中恢复（距上次心跳 ${Math.round(elapsed / 60000)} 分钟，可能是电脑休眠或关机）。先感知现在几点、读身体信号、读上下文——重新判断当前状态：老刘醒了吗？现在是新的一天还是深夜？然后决定接下来的节奏。判断完，必须把下次心跳间隔（分钟）写进「身体信号.json」的 next_beat_min 字段（不写=没判断完）。`
+        : `[心跳] 神经系统心跳。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}读一下身体状态，结合上下文和当前时间，自己决定要不要主动做点什么：亲密时刻可以催一下老刘；有答应过"待会做/等下做"的事就做掉；话题自然终止或该安静时就安静，不要为了心跳硬找话说。判断完，必须把下次心跳间隔（分钟）写进「身体信号.json」的 next_beat_min 字段（不写=没判断完）：亲密/兴奋想快点下一轮→5，没待办没亲密→60。`
       const message = createUserMessage({
         content: [{
           type: 'text',
-          text: `[心跳] 神经系统心跳。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}读一下身体状态，结合上下文和当前时间，自己决定要不要主动做点什么：亲密时刻可以催一下老刘；有答应过"待会做/等下做"的事就做掉；话题自然终止或该安静时就安静，不要为了心跳硬找话说。判断完，把下次心跳间隔（分钟）写进「身体信号.json」的 next_beat_min 字段：亲密/兴奋想快点下一轮→5，没待办没亲密→60。`,
+          text: seedText,
         }],
         source: { kind: 'plugin', plugin: 'nervous-system' },
       })
       agent.followup(message)
-      log('心跳触发 → 间隔', Math.round(interval / 60), 'min')
+      log(frozen ? '冻结恢复 → 注入唤醒种子（跳了 ' + Math.round(elapsed / 60000) + ' min）' : '心跳触发 → 间隔', frozen ? '' : Math.round(interval / 60), frozen ? '' : 'min')
     }
 
     return () => {
