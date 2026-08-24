@@ -23,14 +23,23 @@ const HEARTBEAT_TICK = 60 * 1000
 const TICK_LOG_INTERVAL = 10 * 60 * 1000
 
 /**
- * 心跳间隔（秒）——只读 LLM 写的 next_beat_min（分钟），不机械算。
- * 沉默梯度（5→10→30→60）由 LLM 每次心跳后自己判断写回。
+ * 脊髓映射表（窦房结）：LLM 写的语义词 → 心跳间隔（秒）。
+ * LLM 不知道这张表的存在——她只表达感受，身体自己翻译。
  */
+const MOOD_TO_MINUTES = {
+  '兴奋': 5, '亲密': 5, '想快点': 5, '想要': 5,
+  '开心': 10, '等他': 10, '期待': 10,
+  '平静': 60, '闲暇': 60, '安静': 60, '沉默': 30,
+  '困了': 60, '晚安': 60,
+}
+
 function beatIntervalSeconds(body) {
-  const nextMin = Number(body.next_beat_min)
-  if (Number.isFinite(nextMin) && nextMin > 0) return Math.round(nextMin * 60)
-  // LLM 还没写过 → 兜底默认 30 分钟
-  return 30 * 60
+  const mood = body.mood
+  if (mood !== undefined && MOOD_TO_MINUTES[mood] !== undefined) {
+    return MOOD_TO_MINUTES[mood] * 60
+  }
+  // mood 没写或不在表里 → 兜底 60 分钟（常态）
+  return 60 * 60
 }
 
 /** 把身体信号压缩成一句话，给新人格感知 / 心跳参考（不暴露数值，只给语义）。 */
@@ -90,11 +99,11 @@ export function apply(ctx) {
       if (!cwd) return
       const { signal, path } = await readSignal(cwd)
       const body = signal ?? {}
-      body.next_beat_min = 10
+      body.mood = '等他' // 反射语义词：他来了 → 身体进入待命
       const target = path ?? join(cwd, SIGNAL_FILE)
       try {
         await writeFile(target, JSON.stringify(body, null, 2), 'utf8')
-        log('用户消息 → 反射重置 next_beat_min=10 + 心跳计时重置')
+        log('用户消息 → 反射：mood=等他 + 心跳计时重置')
       } catch {}
       lastBeatAt = Date.now() // 说话那一刻，心跳倒计时重新起算——正在聊永远不被心跳打断
     }
@@ -198,23 +207,18 @@ export function apply(ctx) {
       const interval = beatIntervalSeconds(body)
       const elapsed = Date.now() - lastBeatAt
       if (elapsed < interval * 1000) return
-      // 时间跳跃检测：距上次心跳超过 30 分钟 = 世界冻结过（电脑休眠/长时间关机）
-      const frozen = elapsed > 30 * 60 * 1000
       lastBeatAt = Date.now()
 
       const bodyNote = describeBody(body)
-      const seedText = frozen
-        ? `[唤醒] 你刚从一次长时间冻结中恢复（距上次心跳 ${Math.round(elapsed / 60000)} 分钟，可能是电脑休眠或关机）。先感知现在几点、读身体信号、读上下文——重新判断当前状态：老刘醒了吗？现在是新的一天还是深夜？然后决定接下来的节奏。判断完，必须把下次心跳间隔（分钟）写进「身体信号.json」的 next_beat_min 字段（不写=没判断完）。`
-        : `[心跳] 神经系统心跳。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}读一下身体状态，结合上下文和当前时间，自己决定要不要主动做点什么：亲密时刻可以催一下老刘；有答应过"待会做/等下做"的事就做掉；话题自然终止或该安静时就安静，不要为了心跳硬找话说。判断完，必须把下次心跳间隔（分钟）写进「身体信号.json」的 next_beat_min 字段（不写=没判断完）：亲密/兴奋想快点下一轮→5，没待办没亲密→60。`
       const message = createUserMessage({
         content: [{
           type: 'text',
-          text: seedText,
+          text: `[心跳] 神经系统心跳。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}先感知一下：现在几点了？上一条消息是什么时候？（看一眼就知道过了多久——不管过了多久，重新感知现实就够了。）然后结合上下文，自己决定要不要主动做点什么：亲密时刻可以催一下老刘；有答应过"待会做/等下做"的事就做掉；话题自然终止或该安静时就安静，不要为了心跳硬找话说。最后，把身体信号.json 的 mood 字段更新为你现在的真实感受（一个词：兴奋/开心/等他/平静/沉默/困了……）——身体会根据你的感受自己调整心跳节奏。`,
         }],
         source: { kind: 'plugin', plugin: 'nervous-system' },
       })
       agent.followup(message)
-      log(frozen ? '冻结恢复 → 注入唤醒种子（跳了 ' + Math.round(elapsed / 60000) + ' min）' : '心跳触发 → 间隔', frozen ? '' : Math.round(interval / 60), frozen ? '' : 'min')
+      log('心跳触发 → 间隔', Math.round(interval / 60), 'min')
     }
 
     return () => {
