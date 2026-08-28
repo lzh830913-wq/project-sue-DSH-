@@ -115,7 +115,7 @@ export function apply(ctx) {
       if (!cwd) return
       const { signal, path: signalPath } = await readSignal(cwd)
       if (signal === null) return
-      if (signal.to !== 'wen' && signal.to !== 'jingwen') return
+      if (signal.to !== 'li' && signal.to !== 'biao') return
 
       switching = true
       log('检测到切换信号 →', signal.to)
@@ -167,7 +167,7 @@ export function apply(ctx) {
         const message = createUserMessage({
           content: [{
             type: 'text',
-            text: `你现在是「${signal.to}」，给老刘打个招呼。${bodyNote ? '（身体信号：' + bodyNote + '）' : ''}`,
+            text: `你现在是「${signal.身份}」，给老刘打个招呼。${bodyNote ? '（身体信号：' + bodyNote + '）' : ''}`,
           }],
           source: { kind: 'plugin', plugin: 'nervous-system' },
         })
@@ -179,12 +179,12 @@ export function apply(ctx) {
       } finally {
         switching = false
         if (signalPath !== null) {
-          // 只清 to（身体字段保留给新人格），不删整个文件
+          // 清 to（瞬态信号用完即弃），保留 身份（持久身份锚）
           try {
             const body = { ...signal }
             delete body.to
             await writeFile(signalPath, JSON.stringify(body, null, 2), 'utf8')
-            log('已清掉 to，保留身体字段:', signalPath)
+            log('切换完成 → to 已清，身份锚保留:', body.身份 ?? signal.身份)
           } catch {}
         }
         // （切换时新值已经写进去了，旧值自然被覆盖）
