@@ -187,6 +187,7 @@ export function apply(ctx) {
             log('已清掉 to，保留身体字段:', signalPath)
           } catch {}
         }
+        // （切换时新值已经写进去了，旧值自然被覆盖）
       }
     }
 
