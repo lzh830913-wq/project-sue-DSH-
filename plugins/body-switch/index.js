@@ -197,9 +197,31 @@ export function apply(ctx) {
 
     // ===== 心跳（v2 · 语义感知式） =====
     async function heartbeatTick() {
-      const hour = new Date().getHours()
-      // 机械兜底：凌晨 1-6 点 → 心跳暂停
-      if (hour >= 1 && hour < 6) return
+      // 重启恢复：lastAgent 为空 → 找工作区最后活跃的 session → 挂钩
+      if (lastAgent === null && !switching) {
+        try {
+          const workspaceRegistry = ctx.get('workspaceRegistry')
+          if (workspaceRegistry !== undefined) {
+            const ws = await workspaceRegistry.resolveByPath('I:\\SUE test')
+            if (ws !== undefined && ws.sessionIds.length > 0) {
+              // 取最后一个 session（最近活跃的）
+              const lastSessionId = ws.sessionIds[ws.sessionIds.length - 1]
+              const session = ctx.sessions.get(lastSessionId)
+              if (session !== undefined) {
+                const roots = ctx.agents.roots()
+                const matched = roots.find(a => a.session && a.session.id === lastSessionId)
+                if (matched !== undefined) {
+                  lastAgent = matched
+                  lastAgentIdle = matched.status === 'idle'
+                  log('重启恢复 → 挂钩 session:', lastSessionId)
+                }
+              }
+            }
+          }
+        } catch (e) {
+          log('重启恢复失败:', e instanceof Error ? e.message : String(e))
+        }
+      }
       // 读信号（脊髓需要感知身体状态）
       const agentPre = lastAgent
       let cwdPre = null
@@ -211,18 +233,6 @@ export function apply(ctx) {
       if (!cwdPre) return
       const pre = await readSignal(cwdPre)
       const body = pre.signal ?? {}
-      // 休眠（脊髓反射：唤醒度最低 = 心跳自然停）
-      if (body.mood === '休眠') {
-        if (hour >= 6 && hour < 22) {
-          // 白天了但还在休眠 → 清掉，醒来新的一天
-          delete body.mood
-          try {
-            await writeFile(pre.path ?? join(cwdPre, SIGNAL_FILE), JSON.stringify(body, null, 2), 'utf8')
-            log('早安——休眠已清，新的一天')
-          } catch {}
-        }
-        return // 困了 → 心跳停，不产生 token
-      }
       if (Date.now() - lastTickLogAt >= TICK_LOG_INTERVAL) {
         lastTickLogAt = Date.now()
         log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null))
