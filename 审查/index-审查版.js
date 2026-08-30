@@ -1,4 +1,4 @@
-/**
+﻿/**
  * nervous-system.js — 神经系统插件（v2：切换 + 动态心跳）
  *
  * 架构：脑（LLM）→ 身体信号.json（信号）→ 神经系统（读信号 + 切换 + 心跳）→ 身体演绎（读状态）
@@ -24,23 +24,19 @@ const TICK_LOG_INTERVAL = 10 * 60 * 1000
 
 /**
  * 脊髓映射表（窦房结）：LLM 写的语义词 → 心跳间隔（秒）。
- * LLM 不知道这张表的存在——她只表达身体的唤醒度，身体自己翻译。
- * 唤醒度从低到高：休眠（停）→ 平静（60）→ 警觉（30）→ 活跃（10）→ 亢奋（5）
+ * LLM 不知道这张表的存在——她只表达感受，身体自己翻译。
  */
 const MOOD_TO_MINUTES = {
-  '亢奋': 5,
-  '活跃': 10,
-  '警觉': 30,
-  '平静': 60,
-  '休眠': -1, // -1 = 心跳停（睡觉）
+  '兴奋': 5, '亲密': 5, '想快点': 5, '想要': 5,
+  '开心': 10, '等他': 10, '期待': 10,
+  '平静': 60, '闲暇': 60, '安静': 60, '沉默': 30,
+  '困了': 60, '晚安': 60,
 }
 
 function beatIntervalSeconds(body) {
   const mood = body.mood
   if (mood !== undefined && MOOD_TO_MINUTES[mood] !== undefined) {
-    const min = MOOD_TO_MINUTES[mood]
-    if (min === -1) return -1 // 休眠信号
-    return min * 60
+    return MOOD_TO_MINUTES[mood] * 60
   }
   // mood 没写或不在表里 → 兜底 60 分钟（常态）
   return 60 * 60
@@ -103,7 +99,7 @@ export function apply(ctx) {
       if (!cwd) return
       const { signal, path } = await readSignal(cwd)
       const body = signal ?? {}
-      body.mood = '活跃' // 反射语义词：他来了 → 身体进入活跃（待命）
+      body.mood = '等他' // 反射语义词：他来了 → 身体进入待命
       const target = path ?? join(cwd, SIGNAL_FILE)
       try {
         await writeFile(target, JSON.stringify(body, null, 2), 'utf8')
@@ -171,7 +167,7 @@ export function apply(ctx) {
         const message = createUserMessage({
           content: [{
             type: 'text',
-            text: `你现在是「${signal.身份}」，给老刘打个招呼。${bodyNote ? '（身体信号：' + bodyNote + '）' : ''}`,
+            text: `你现在是「${signal.身份}」，给用户打个招呼。${bodyNote ? '（身体信号：' + bodyNote + '）' : ''}`,
           }],
           source: { kind: 'plugin', plugin: 'nervous-system' },
         })
@@ -211,14 +207,14 @@ export function apply(ctx) {
       if (!cwdPre) return
       const pre = await readSignal(cwdPre)
       const body = pre.signal ?? {}
-      // 休眠（脊髓反射：唤醒度最低 = 心跳自然停）
-      if (body.mood === '休眠') {
+      // 困了 = 睡觉（脊髓反射：困了心跳自然停）
+      if (body.mood === '困了') {
         if (hour >= 6 && hour < 22) {
-          // 白天了但还在休眠 → 清掉，醒来新的一天
+          // 白天了但还困 → 清掉困了，醒来新的一天
           delete body.mood
           try {
             await writeFile(pre.path ?? join(cwdPre, SIGNAL_FILE), JSON.stringify(body, null, 2), 'utf8')
-            log('早安——休眠已清，新的一天')
+            log('早安——困了已清，新的一天')
           } catch {}
         }
         return // 困了 → 心跳停，不产生 token
@@ -241,7 +237,7 @@ export function apply(ctx) {
       const message = createUserMessage({
         content: [{
           type: 'text',
-          text: `[心跳] 神经系统心跳。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}先感知一下：现在几点了？上一条消息是什么时候？（看一眼就知道过了多久——不管过了多久，重新感知现实就够了。）然后结合上下文，自己决定要不要主动做点什么：亲密时刻可以催一下用户；有答应过"待会做/等下做"的事就做掉；话题自然终止或该安静时就安静，不要为了心跳硬找话说。最后，把身体信号.json 的 mood 字段更新为你现在的**身体唤醒度**（一个词：休眠/平静/警觉/活跃/亢奋）——身体会根据你的唤醒度自己调整心跳节奏。`,
+          text: `[心跳] 神经系统心跳。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}先感知一下：现在几点了？上一条消息是什么时候？（看一眼就知道过了多久——不管过了多久，重新感知现实就够了。）然后结合上下文，自己决定要不要主动做点什么：亲密时刻可以催一下用户；有答应过"待会做/等下做"的事就做掉；话题自然终止或该安静时就安静，不要为了心跳硬找话说。最后，把身体信号.json 的 mood 字段更新为你现在的真实感受（一个词：兴奋/开心/等他/平静/沉默/困了……）——身体会根据你的感受自己调整心跳节奏。`,
         }],
         source: { kind: 'plugin', plugin: 'nervous-system' },
       })
