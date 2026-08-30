@@ -107,7 +107,7 @@ export function apply(ctx) {
       const target = path ?? join(cwd, SIGNAL_FILE)
       try {
         await writeFile(target, JSON.stringify(body, null, 2), 'utf8')
-        log('用户消息 → 反射：mood=等他 + 心跳计时重置')
+        log('用户消息 → 反射：mood=活跃 + 心跳计时重置')
       } catch {}
       lastBeatAt = Date.now() // 说话那一刻，心跳倒计时重新起算——正在聊永远不被心跳打断
     }
