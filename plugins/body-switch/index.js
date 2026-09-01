@@ -32,6 +32,7 @@ const MOOD_TO_MINUTES = {
   '活跃': 10,
   '警觉': 30,
   '平静': 60,
+  '休眠': 480, // 睡前准备后（8小时），日常不会写到这个值
 }
 
 function beatIntervalSeconds(body) {
@@ -232,8 +233,6 @@ export function apply(ctx) {
       if (!cwdPre) return
       const pre = await readSignal(cwdPre)
       const body = pre.signal ?? {}
-      // 休眠 → 心跳停（tick 照常跑，但不注入、不产生 token）
-      if (body.mood === '休眠') return
       if (Date.now() - lastTickLogAt >= TICK_LOG_INTERVAL) {
         lastTickLogAt = Date.now()
         log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null))
