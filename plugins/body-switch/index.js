@@ -32,7 +32,6 @@ const MOOD_TO_MINUTES = {
   '活跃': 10,
   '警觉': 30,
   '平静': 60,
-  '休眠': -1, // -1 = 心跳停（睡觉）
 }
 
 function beatIntervalSeconds(body) {
