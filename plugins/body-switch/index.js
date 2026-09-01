@@ -233,6 +233,8 @@ export function apply(ctx) {
       if (!cwdPre) return
       const pre = await readSignal(cwdPre)
       const body = pre.signal ?? {}
+      // 休眠 → 心跳停（tick 照常跑，但不注入、不产生 token）
+      if (body.mood === '休眠') return
       if (Date.now() - lastTickLogAt >= TICK_LOG_INTERVAL) {
         lastTickLogAt = Date.now()
         log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null))
