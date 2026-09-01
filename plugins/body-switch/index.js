@@ -25,22 +25,20 @@ const TICK_LOG_INTERVAL = 10 * 60 * 1000
 /**
  * 脊髓映射表（窦房结）：LLM 写的语义词 → 心跳间隔（秒）。
  * LLM 不知道这张表的存在——她只表达身体的唤醒度，身体自己翻译。
- * 唤醒度从低到高：休眠（停）→ 平静（60）→ 警觉（30）→ 活跃（10）→ 亢奋（5）
+ * 唤醒度从低到高：休眠（睡眠·长心跳）→ 平静（60）→ 警觉（30）→ 活跃（10）→ 亢奋（5）
  */
 const MOOD_TO_MINUTES = {
   '亢奋': 5,
   '活跃': 10,
   '警觉': 30,
   '平静': 60,
-  '休眠': 480, // 睡前准备后（8小时），日常不会写到这个值
+  '休眠': 480, // 睡眠：长心跳（8小时一觉）。睡够自然醒一次，感知现实（看时间戳）后自己决定继续睡还是醒来
 }
 
 function beatIntervalSeconds(body) {
   const mood = body.mood
   if (mood !== undefined && MOOD_TO_MINUTES[mood] !== undefined) {
-    const min = MOOD_TO_MINUTES[mood]
-    if (min === -1) return -1 // 休眠信号
-    return min * 60
+    return MOOD_TO_MINUTES[mood] * 60
   }
   // mood 没写或不在表里 → 兜底 60 分钟（常态）
   return 60 * 60
