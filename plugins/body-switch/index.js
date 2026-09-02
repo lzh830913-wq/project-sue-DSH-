@@ -231,16 +231,16 @@ export function apply(ctx) {
       if (!cwdPre) return
       const pre = await readSignal(cwdPre)
       const body = pre.signal ?? {}
+      const interval = beatIntervalSeconds(body)
       if (Date.now() - lastTickLogAt >= TICK_LOG_INTERVAL) {
         lastTickLogAt = Date.now()
-        log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null))
+        log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null) + ' mood=' + (body.mood ?? '未写') + ' 心跳间隔' + Math.round(interval / 60) + 'min')
       }
       if (switching) return
       if (lastAgent === null || !lastAgentIdle) return
       const agent = lastAgent
       const cwd = agent.session.header.cwd
       if (!cwd) return
-      const interval = beatIntervalSeconds(body)
       const elapsed = Date.now() - lastBeatAt
       if (elapsed < interval * 1000) return
       lastBeatAt = Date.now()
