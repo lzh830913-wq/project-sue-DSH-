@@ -27,21 +27,39 @@ const TICK_LOG_INTERVAL = 10 * 60 * 1000
  * LLM 不知道这张表的存在——她只表达身体的唤醒度，身体自己翻译。
  * 唤醒度从低到高：休眠（睡眠·长心跳）→ 平静（60）→ 警觉（30）→ 活跃（10）→ 亢奋（5）
  */
-const MOOD_TO_MINUTES = {
-  '亢奋': 5,
-  '活跃': 10,
-  '警觉': 30,
-  '平静': 60,
-  '休眠': 480, // 睡眠：长心跳（8小时一觉）。睡够自然醒一次，感知现实（看时间戳）后自己决定继续睡还是醒来
-}
+/**
+ * 冷却阶梯（脊髓维护，LLM 无参与）：锚（用户最后消息）之后心跳「扑空」的次数 → 下一次心跳间隔。
+ * 0 次=10（反射后的热心跳），1 次=30，2 次及以上=60（平稳待命）。
+ * 唯一例外：休眠（她睡前亲手写的 480 分钟档），脊髓永不代写、永不自动进入。
+ */
+const COOLDOWN_TABLE = [10, 30, 60]
 
 function beatIntervalSeconds(body) {
-  const mood = body.mood
-  if (mood !== undefined && MOOD_TO_MINUTES[mood] !== undefined) {
-    return MOOD_TO_MINUTES[mood] * 60
-  }
-  // mood 没写或不在表里 → 兜底 60 分钟（常态）
-  return 60 * 60
+  if (body.mood === '休眠') return 480 * 60
+  const beats = typeof body.cool_beats === 'number' ? body.cool_beats : 2
+  const idx = Math.min(beats, COOLDOWN_TABLE.length - 1)
+  return COOLDOWN_TABLE[idx] * 60
+}
+
+/** 扑空次数对应的档位词（mood 是脊髓维护的档位标签，她只在睡前写休眠）。 */
+function cooldownMoodWord(beats) {
+  if (beats <= 0) return '活跃'
+  if (beats === 1) return '警觉'
+  return '平静'
+}
+
+/** 按「扑空次数」从 HEARTBEAT.md 提取此刻的感知种子（beat:N 块）；缺失则回退通用引导。 */
+async function beatSeed(cwd, beats) {
+  try {
+    const md = await readFile(join(cwd, 'HEARTBEAT.md'), 'utf8')
+    const re = /<!--\s*beat:(\d+)\s*-->([\s\S]*?)(?=<!--\s*beat:\d+|$)/g
+    let m
+    const map = {}
+    while ((m = re.exec(md)) !== null) map[m[1]] = m[2].trim()
+    const idx = String(Math.min(beats, 2))
+    return map[idx] || '看看现在可以做什么，或安静。'
+  } catch {}
+  return '看看现在可以做什么，或安静。'
 }
 
 /** 把身体信号压缩成一句话，给新人格感知 / 心跳参考（不暴露数值，只给语义）。 */
@@ -95,17 +113,18 @@ export function apply(ctx) {
       return { signal: null, path: null }
     }
 
-    /** 反射：用户消息到达 → 心跳待命档 next_beat_min=10（只改这一个字段，保留 to 和身体字段）。 */
+    /** 反射：用户消息到达 → 身体进入活跃 + 扑空清零 + 心跳计时重置（脊髓硬线，不过脑）。 */
     async function resetBeatTo10(session) {
       const cwd = session.header?.cwd
       if (!cwd) return
       const { signal, path } = await readSignal(cwd)
       const body = signal ?? {}
-      body.mood = '活跃' // 反射语义词：他来了 → 身体进入活跃（待命）
+      body.mood = '活跃' // 反射：他来了 → 身体进入活跃
+      body.cool_beats = 0 // 锚重置：扑空计数清零
       const target = path ?? join(cwd, SIGNAL_FILE)
       try {
         await writeFile(target, JSON.stringify(body, null, 2), 'utf8')
-        log('用户消息 → 反射：mood=活跃 + 心跳计时重置')
+        log('用户消息 → 反射：mood=活跃 + 扑空清零 + 心跳计时重置')
       } catch {}
       lastBeatAt = Date.now() // 说话那一刻，心跳倒计时重新起算——正在聊永远不被心跳打断
     }
@@ -234,7 +253,7 @@ export function apply(ctx) {
       const interval = beatIntervalSeconds(body)
       if (Date.now() - lastTickLogAt >= TICK_LOG_INTERVAL) {
         lastTickLogAt = Date.now()
-        log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null) + ' mood=' + (body.mood ?? '未写') + ' 心跳间隔' + Math.round(interval / 60) + 'min')
+        log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null) + ' mood=' + (body.mood ?? '未写') + ' 扑空' + (typeof body.cool_beats === 'number' ? body.cool_beats : 2) + '次 心跳间隔' + Math.round(interval / 60) + 'min')
       }
       if (switching) return
       if (lastAgent === null || !lastAgentIdle) return
@@ -246,15 +265,26 @@ export function apply(ctx) {
       lastBeatAt = Date.now()
 
       const bodyNote = describeBody(body)
+      const beats = typeof body.cool_beats === 'number' ? body.cool_beats : 2
+      const seed = await beatSeed(cwd, beats)
       const message = createUserMessage({
         content: [{
           type: 'text',
-          text: `[心跳] 心跳是醒来，做点有用的主动进展，不是刷存在感。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}先感知两个时间：现在几点、距上次交谈多久（消息时间戳，看一眼就知道）。然后照 HEARTBEAT.md 行事：该查的查，该发的发，该记的记。想他就说话；别机械循环——宁可做点实在的，别发「状态没变」这类重复话；状态没变、不值得打扰 → 换法子、挖深一层，或安静。最后，把 身体信号.json 的 mood 字段更新为你现在的**身体唤醒度**（一个词：休眠/平静/警觉/活跃/亢奋）——身体会根据你的唤醒度自己调整心跳节奏。`,
+          text: `[心跳] 心跳是醒来，做点有用的主动进展，不是刷存在感。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}此刻的感知：${seed}然后照 HEARTBEAT.md 行事：想他就说话；别机械循环——宁可做点实在的，别发「状态没变」这类重复话；不值得打扰 → 换法子、挖深一层，或安静。（你的唤醒度由身体自动维护，不用写；唯一的例外是睡前的休眠信号，仍由你亲手写下。）`,
         }],
         source: { kind: 'plugin', plugin: 'nervous-system' },
       })
       agent.followup(message)
-      log('心跳触发 → 间隔', Math.round(interval / 60), 'min')
+      // 扑空 +1（脊髓维护：这次醒来他没有消息在等 → 身体自己凉一档），档位词写回落盘
+      const nextBeats = Math.min(beats + 1, COOLDOWN_TABLE.length - 1)
+      try {
+        const { signal: sigNow, path: pNow } = await readSignal(cwd)
+        const nb = sigNow ?? {}
+        nb.cool_beats = nextBeats
+        if (nb.mood !== '休眠') nb.mood = cooldownMoodWord(nextBeats)
+        await writeFile(pNow ?? join(cwd, SIGNAL_FILE), JSON.stringify(nb, null, 2), 'utf8')
+      } catch {}
+      log('心跳触发 → 扑空' + nextBeats + '次，下次间隔', Math.round(beatIntervalSeconds({ cool_beats: nextBeats }) / 60), 'min')
     }
 
     return () => {
