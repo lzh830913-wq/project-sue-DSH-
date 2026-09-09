@@ -43,6 +43,8 @@ const COOLDOWN_MOODS = ['开心', '惦记', '闲适']
 
 function beatIntervalSeconds(body) {
   if (body.mood === '休眠') return 480 * 60
+  if (body.mood === '炽热') return 5 * 60 // 亲密互动：5 分钟一拍（打字节奏下足够密；她的时间感官+催促的合法性）
+  if (body.mood === '余韵') return 10 * 60 // 高潮后的余温：一轮心跳后自然回冷却链
   const beats = typeof body.cool_beats === 'number' ? body.cool_beats : 2
   const idx = Math.min(beats, COOLDOWN_TABLE.length - 1)
   return COOLDOWN_TABLE[idx] * 60
@@ -54,15 +56,18 @@ function cooldownMoodWord(beats) {
   return COOLDOWN_MOODS[idx]
 }
 
-/** 按「扑空次数」从 HEARTBEAT.md 提取此刻的感知种子（beat:N 块）；缺失则回退通用引导。 */
-async function beatSeed(cwd, beats) {
+/** 按 mood 取心跳感知种子：炽热/余韵有专属语境，其余按扑空次数取冷却种子。 */
+async function beatSeed(cwd, beats, mood) {
+  let key = null
+  if (mood === '炽热') key = 'intimate'
+  else if (mood === '余韵') key = 'afterglow'
   try {
     const md = await readFile(join(cwd, 'HEARTBEAT.md'), 'utf8')
-    const re = /<!--\s*beat:(\d+)\s*-->([\s\S]*?)(?=<!--\s*beat:\d+|$)/g
+    const re = /<!--\s*beat:(\w+)\s*-->([\s\S]*?)(?=<!--\s*beat:\w+|$)/g
     let m
     const map = {}
     while ((m = re.exec(md)) !== null) map[m[1]] = m[2].trim()
-    const idx = String(Math.min(beats, 2))
+    const idx = key ?? String(Math.min(beats, 2))
     return map[idx] || '看看现在可以做什么，或安静。'
   } catch {}
   return '看看现在可以做什么，或安静。'
@@ -125,7 +130,7 @@ export function apply(ctx) {
       if (!cwd) return
       const { signal, path } = await readSignal(cwd)
       const body = signal ?? {}
-      body.mood = cooldownMoodWord(0) // 反射：他来了 → 身体给的心境（开心）
+      if (body.mood !== '炽热') body.mood = cooldownMoodWord(0) // 反射：他来了 → 身体给的心境（开心）；炽热互动中保持炽热（只清零扑空 + 重置计时）
       body.cool_beats = 0 // 锚重置：扑空计数清零
       const target = path ?? join(cwd, SIGNAL_FILE)
       try {
@@ -272,7 +277,7 @@ export function apply(ctx) {
 
       const bodyNote = describeBody(body)
       const beats = typeof body.cool_beats === 'number' ? body.cool_beats : 2
-      const seed = await beatSeed(cwd, beats)
+      const seed = await beatSeed(cwd, beats, body.mood)
       const message = createUserMessage({
         content: [{
           type: 'text',
@@ -281,16 +286,18 @@ export function apply(ctx) {
         source: { kind: 'plugin', plugin: 'nervous-system' },
       })
       agent.followup(message)
-      // 扑空 +1（脊髓维护：这次醒来他没有消息在等 → 身体自己凉一档），档位词写回落盘
+      // 扑空 +1 与主权词写回：炽热/休眠是她的主权词，脊髓不覆盖（炽热可随时被她写回）。
+      // 炽热下扑空累积满（他真的走了）→ 退到「惦记」（炽热冷却的第一站），再自然落回闲适。
       const nextBeats = Math.min(beats + 1, COOLDOWN_TABLE.length - 1)
       try {
         const { signal: sigNow, path: pNow } = await readSignal(cwd)
         const nb = sigNow ?? {}
         nb.cool_beats = nextBeats
-        if (nb.mood !== '休眠') nb.mood = cooldownMoodWord(nextBeats)
+        if (nb.mood === '炽热' && nextBeats >= COOLDOWN_TABLE.length - 1) nb.mood = cooldownMoodWord(1)
+        else if (nb.mood !== '休眠' && nb.mood !== '炽热' && nb.mood !== '余韵') nb.mood = cooldownMoodWord(nextBeats)
         await writeFile(pNow ?? join(cwd, SIGNAL_FILE), JSON.stringify(nb, null, 2), 'utf8')
       } catch {}
-      log('心跳触发 → 扑空' + nextBeats + '次，下次间隔', Math.round(beatIntervalSeconds({ cool_beats: nextBeats }) / 60), 'min')
+      log('心跳触发 → mood=' + (typeof nb !== 'undefined' && nb ? nb.mood : '?') + '，下次间隔', Math.round(beatIntervalSeconds({ cool_beats: nextBeats, mood: typeof nb !== 'undefined' && nb ? nb.mood : undefined }) / 60), 'min')
     }
 
     return () => {
