@@ -34,6 +34,13 @@ const TICK_LOG_INTERVAL = 10 * 60 * 1000
  */
 const COOLDOWN_TABLE = [10, 30, 60]
 
+/**
+ * 心境词（身体反向注入，James-Lange：身体先给状态，大脑体验它）。
+ * 扑空 0/1/2+ 对应的心境——脊髓把兴奋度翻译成心情喂给大脑，她醒来带着它体感世界。
+ * 唯一例外：休眠仍由她睡前亲手写。改词需重启。
+ */
+const COOLDOWN_MOODS = ['开心', '惦记', '闲适']
+
 function beatIntervalSeconds(body) {
   if (body.mood === '休眠') return 480 * 60
   const beats = typeof body.cool_beats === 'number' ? body.cool_beats : 2
@@ -41,11 +48,10 @@ function beatIntervalSeconds(body) {
   return COOLDOWN_TABLE[idx] * 60
 }
 
-/** 扑空次数对应的档位词（mood 是脊髓维护的档位标签，她只在睡前写休眠）。 */
+/** 扑空次数对应的心境词（脊髓反向注入：身体给状态，大脑体验它）。 */
 function cooldownMoodWord(beats) {
-  if (beats <= 0) return '活跃'
-  if (beats === 1) return '警觉'
-  return '平静'
+  const idx = Math.min(Math.max(beats, 0), COOLDOWN_MOODS.length - 1)
+  return COOLDOWN_MOODS[idx]
 }
 
 /** 按「扑空次数」从 HEARTBEAT.md 提取此刻的感知种子（beat:N 块）；缺失则回退通用引导。 */
@@ -119,7 +125,7 @@ export function apply(ctx) {
       if (!cwd) return
       const { signal, path } = await readSignal(cwd)
       const body = signal ?? {}
-      body.mood = '活跃' // 反射：他来了 → 身体进入活跃
+      body.mood = cooldownMoodWord(0) // 反射：他来了 → 身体给的心境（开心）
       body.cool_beats = 0 // 锚重置：扑空计数清零
       const target = path ?? join(cwd, SIGNAL_FILE)
       try {
