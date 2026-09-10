@@ -296,8 +296,8 @@ export function apply(ctx) {
         if (nb.mood === '炽热' && nextBeats >= COOLDOWN_TABLE.length - 1) nb.mood = cooldownMoodWord(1)
         else if (nb.mood !== '休眠' && nb.mood !== '炽热' && nb.mood !== '余韵') nb.mood = cooldownMoodWord(nextBeats)
         await writeFile(pNow ?? join(cwd, SIGNAL_FILE), JSON.stringify(nb, null, 2), 'utf8')
+        log('心跳触发 → mood=' + nb.mood + '，下次间隔', Math.round(beatIntervalSeconds(nb) / 60), 'min')
       } catch {}
-      log('心跳触发 → mood=' + (typeof nb !== 'undefined' && nb ? nb.mood : '?') + '，下次间隔', Math.round(beatIntervalSeconds({ cool_beats: nextBeats, mood: typeof nb !== 'undefined' && nb ? nb.mood : undefined }) / 60), 'min')
     }
 
     return () => {
