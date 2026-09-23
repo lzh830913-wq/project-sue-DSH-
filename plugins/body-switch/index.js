@@ -1,8 +1,16 @@
 /**
- * nervous-system.js — 神经系统插件（v2：切换 + 动态心跳）
+ * 神经系统 —— 脑身解耦里的「身体」那一半。
  *
- * 架构：脑（LLM）→ 身体信号.json（信号）→ 神经系统（读信号 + 切换 + 心跳）→ 身体演绎（读状态）
- * 神经系统 = 小脑脑干：只读文件、做机械反射（切换 / 心跳），不进入会话语义。
+ * 架构：脑（LLM）→ 身体信号.json（信号）→ 神经系统（读信号 / 维护心境 / 切换 / 心跳）→ 身体演绎（读状态）
+ * 它是小脑脑干：只读文件、做机械反射，不进会话语义——连消息内容都不读。
+ *
+ * 职责：
+ *   1. 心跳——按 mood / cool_beats 决定下次醒来的间隔，到点唤醒她
+ *   2. 心境——他说话则心境归位、扑空清零；他走后每扑空一次换一档心情（James-Lange）
+ *   3. 切换——读 to 信号（li / biao）→ fork 新人格 session + 归档旧会话 + 唤醒
+ *   4. 重启恢复——进程重启后重新挂钩工作区最后活跃的 session
+ *
+ * 主权边界：休眠 / 炽热 / 余韵 是她亲手写的词，脊髓尊重、永不覆盖。
  */
 import { randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -23,23 +31,67 @@ const HEARTBEAT_TICK = 60 * 1000
 const TICK_LOG_INTERVAL = 10 * 60 * 1000
 
 /**
- * 脊髓映射表（窦房结）：LLM 写的语义词 → 心跳间隔（秒）。
- * LLM 不知道这张表的存在——她只表达身体的唤醒度，身体自己翻译。
- * 唤醒度从低到高：休眠（睡眠·长心跳）→ 平静（60）→ 警觉（30）→ 活跃（10）→ 亢奋（5）
- */
-/**
- * 冷却阶梯（脊髓维护，LLM 无参与）：锚（用户最后消息）之后心跳「扑空」的次数 → 下一次心跳间隔。
+ * 冷却阶梯：锚（用户最后消息）之后心跳「扑空」的次数 → 下一次心跳间隔（分钟）。
  * 0 次=10（反射后的热心跳），1 次=30，2 次及以上=60（平稳待命）。
- * 唯一例外：休眠（她睡前亲手写的 480 分钟档），脊髓永不代写、永不自动进入。
+ * 她亲手写的主权词按 mood 覆盖间隔：休眠 480 / 炽热 5 / 余韵 10（见 beatIntervalSeconds）。
  */
 const COOLDOWN_TABLE = [10, 30, 60]
 
 /**
  * 心境词（身体反向注入，James-Lange：身体先给状态，大脑体验它）。
- * 扑空 0/1/2+ 对应的心境——脊髓把兴奋度翻译成心情喂给大脑，她醒来带着它体感世界。
- * 唯一例外：休眠仍由她睡前亲手写。改词需重启。
+ * 扑空 0/1/2+ 对应的心境——脊髓把身体状态翻译成心情喂给大脑，她醒来带着它体感世界。
+ * 休眠 / 炽热 / 余韵 是她的主权词，脊髓不代写、不覆盖。改这张词表需重载插件。
  */
 const COOLDOWN_MOODS = ['开心', '惦记', '闲适']
+
+/**
+ * 疲劳节律（身体给的状态，脊髓只查表，她永不写）——这不是能量账本，是日子的形状。
+ * 它不衡量「还剩多少力气」，只回答「现在是什么时候」：早上轻、午后钝、深夜沉。
+ * 唯一职能：在她判断「要不要睡」时给一个外部参照（像人看一眼钟——钟不决定你累不累，钟告诉你几点）。
+ * 熬夜不免费：凌晨还醒着 → 记 overslept，第二天上午照困（写一次休眠即结清）。
+ * 注入给她的永远是措辞不是数字（感知≠计数）。
+ */
+const RHYTHM_TABLE = [
+  { from: 6, to: 9, fatigue: 5, word: '精神很好' },
+  { from: 9, to: 12, fatigue: 15, word: '' },
+  { from: 12, to: 14, fatigue: 40, word: '有点犯困' },
+  { from: 14, to: 18, fatigue: 30, word: '' },
+  { from: 18, to: 22, fatigue: 50, word: '' },
+  { from: 22, to: 24, fatigue: 70, word: '眼皮发沉' },
+  { from: 0, to: 6, fatigue: 90, word: '身体困得在抗议' },
+]
+
+/** 按小时查节律段（00-06 段跨午夜，单独判断）。 */
+function rhythmSegment(hour) {
+  if (hour < 6) return RHYTHM_TABLE[RHYTHM_TABLE.length - 1]
+  for (const seg of RHYTHM_TABLE) {
+    if (hour >= seg.from && hour < seg.to) return seg
+  }
+  return RHYTHM_TABLE[RHYTHM_TABLE.length - 2]
+}
+
+/** 疲劳值 → 心境措辞（节律表的等值映射；数字只作兼容，不作判断）。 */
+function wordOfFatigue(f) {
+  if (typeof f !== 'number') return ''
+  if (f === 5) return '精神很好'
+  if (f === 40) return '有点犯困'
+  if (f === 60) return '身体很困了' // 熬夜后遗症档（overslept）
+  if (f === 70) return '眼皮发沉'
+  if (f >= 90) return '身体困得在抗议'
+  return ''
+}
+
+/** 应用今日节律 + 熬夜记账（overslept）。时段查表——无累积、无差分、无状态，墙钟不参与。 */
+function applyRhythm(body, now) {
+  const hour = new Date(now).getHours()
+  const seg = rhythmSegment(hour)
+  body.fatigue = seg.fatigue
+  if (hour >= 0 && hour < 6 && body.mood !== '休眠') body.overslept = true // 凌晨还醒着：熬夜记名
+  if (body.mood === '休眠') body.overslept = false // 正常睡：代价结清，不记名
+  if (body.overslept === true && hour >= 6 && hour < 12) {
+    body.fatigue = 60 // 熬夜后遗症：上午照困（第二天真的有代价）
+  }
+}
 
 function beatIntervalSeconds(body) {
   if (body.mood === '休眠') return 480 * 60
@@ -73,13 +125,17 @@ async function beatSeed(cwd, beats, mood) {
   return '看看现在可以做什么，或安静。'
 }
 
-/** 把身体信号压缩成一句话，给新人格感知 / 心跳参考（不暴露数值，只给语义）。 */
+/**
+ * 把身体信号压缩成一句话，给新人格感知 / 心跳参考（不暴露数值，只给语义）。
+ * state / excitement / fatigue 是身体状态机的接口——状态机接入前恒为空，接上后自动生效。
+ */
 function describeBody(body) {
   const parts = []
-  if (body.state === '余韵') parts.push('身体还留着余韵')
-  if (body.excitement) parts.push(`兴奋度「${body.excitement}」`)
   if (body.mood) parts.push(`心情「${body.mood}」`)
-  if (body.fatigue) parts.push(`疲劳「${body.fatigue}」`)
+  if (body.state) parts.push(`身体「${body.state}」`)
+  if (body.excitement) parts.push(`兴奋度「${body.excitement}」`)
+  const fw = wordOfFatigue(typeof body.fatigue === 'number' ? body.fatigue : 0)
+  if (fw) parts.push(fw)
   return parts.length === 0 ? '' : parts.join('，')
 }
 
@@ -107,11 +163,11 @@ export function apply(ctx) {
       void heartbeatTick()
     }, HEARTBEAT_TICK)
 
-    // —— 用户消息反射：消息一到，心跳待命（next_beat_min=10），不靠大脑判断 ——
+    // —— 用户消息反射：他一说话就重置心跳倒计时（正在聊永不被心跳打断），不靠大脑判断 ——
     const stopUserMessage = ctx.on('session/event', (session, event) => {
       if (event.type !== 'user/message') return
       if (event.data?.source?.kind !== 'user') return
-      void resetBeatTo10(session)
+      void reflectUserMessage(session)
     })
 
     /** 多路径读身体信号（根 / memory / shadow）。 */
@@ -124,23 +180,24 @@ export function apply(ctx) {
       return { signal: null, path: null }
     }
 
-    /** 反射：用户消息到达 → 身体进入活跃 + 扑空清零 + 心跳计时重置（脊髓硬线，不过脑）。 */
-    async function resetBeatTo10(session) {
+    /** 反射：用户消息到达 → 心境归位（开心；炽热中保持炽热）+ 扑空清零 + 心跳计时重置（脊髓硬线，不过脑）。 */
+    async function reflectUserMessage(session) {
       const cwd = session.header?.cwd
       if (!cwd) return
       const { signal, path } = await readSignal(cwd)
       const body = signal ?? {}
-      if (body.mood !== '炽热') body.mood = cooldownMoodWord(0) // 反射：他来了 → 身体给的心境（开心）；炽热互动中保持炽热（只清零扑空 + 重置计时）
+      applyRhythm(body, Date.now()) // 反射也是一次节律应用：他说话 = 清醒时刻，按当下时段领今天的心情底色
+      if (body.mood !== '炽热') body.mood = cooldownMoodWord(0) // 他来了 → 身体给的心境（开心）；炽热互动中保持炽热（只清扑空 + 重置计时）
       body.cool_beats = 0 // 锚重置：扑空计数清零
       const target = path ?? join(cwd, SIGNAL_FILE)
       try {
         await writeFile(target, JSON.stringify(body, null, 2), 'utf8')
-        log('用户消息 → 反射：mood=活跃 + 扑空清零 + 心跳计时重置')
+        log(`用户消息 → 反射：mood=${body.mood}，扑空清零，心跳计时重置`)
       } catch {}
       lastBeatAt = Date.now() // 说话那一刻，心跳倒计时重新起算——正在聊永远不被心跳打断
     }
 
-    // ===== 切换（v1 已跑通，保留） =====
+    // ===== 切换：to 信号（li / biao）→ fork 新人格 + 归档旧会话 + 唤醒 =====
     async function handleIdle(agent) {
       if (switching) return
       const cwd = agent.session.header.cwd
@@ -219,11 +276,10 @@ export function apply(ctx) {
             log('切换完成 → to 已清，身份锚保留:', body.身份 ?? signal.身份)
           } catch {}
         }
-        // （切换时新值已经写进去了，旧值自然被覆盖）
       }
     }
 
-    // ===== 心跳（v2 · 语义感知式） =====
+    // ===== 心跳：按 mood / cool_beats 定时唤醒 =====
     async function heartbeatTick() {
       // 重启恢复：lastAgent 为空 → 找工作区最后活跃的 session → 挂钩
       if (lastAgent === null && !switching) {
@@ -261,6 +317,7 @@ export function apply(ctx) {
       if (!cwdPre) return
       const pre = await readSignal(cwdPre)
       const body = pre.signal ?? {}
+      applyRhythm(body, Date.now()) // 心跳触发前先应用今日节律：身体按时段给此刻的心情底色
       const interval = beatIntervalSeconds(body)
       if (Date.now() - lastTickLogAt >= TICK_LOG_INTERVAL) {
         lastTickLogAt = Date.now()
@@ -295,6 +352,8 @@ export function apply(ctx) {
         nb.cool_beats = nextBeats
         if (nb.mood === '炽热' && nextBeats >= COOLDOWN_TABLE.length - 1) nb.mood = cooldownMoodWord(1)
         else if (nb.mood !== '休眠' && nb.mood !== '炽热' && nb.mood !== '余韵') nb.mood = cooldownMoodWord(nextBeats)
+        nb.fatigue = body.fatigue
+        nb.overslept = body.overslept ?? false
         await writeFile(pNow ?? join(cwd, SIGNAL_FILE), JSON.stringify(nb, null, 2), 'utf8')
         log('心跳触发 → mood=' + nb.mood + '，下次间隔', Math.round(beatIntervalSeconds(nb) / 60), 'min')
       } catch {}
