@@ -1,0 +1,7 @@
+{
+  "name": "@sue/memory-recall",
+  "version": "1.0.0",
+  "description": "记忆召回：跨会话全文搜索 + 会话内事件深挖（sessionQuery 的 model-facing 把手）",
+  "type": "module",
+  "main": "index.js"
+}
