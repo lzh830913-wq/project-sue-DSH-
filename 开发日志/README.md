@@ -7,14 +7,14 @@
 
 - **新会话接活**：先读 `../进度快照.md`（现状 + 已知坑），再回来看本目录里对应主题的那一篇。
 - **想搞懂某个机制为什么长这样**：按下表的「主题」找，再顺着「涉及文件」读源码。
-- **想知道踩过哪些坑**：看类型为 `复盘` 的三篇（08-23 / 09-23 / 09-25）。
+- **想知道踩过哪些坑**：看类型为 `复盘` 的四篇（08-23 / 09-23 / 09-25 / **09-27-收图能力修复**）。
 
 ## 索引
 
 | 日期 | 文件 | 主题 | 类型 | 一句话 | 涉及文件 | 状态 |
 |---|---|---|---|---|---|---|
 | 2026-09-27 | `2026-09-27-心跳三连修.md` | 心跳三连修 + 桌面版调研 + 版本复检 | 落地+调研 | 修 480 死锁（自然醒浮上冷却链）；睡眠时长灵活化（意图+`sleep_hours`+困意反推）；领地铁律定稿；桌面版=Electron 壳（观望）；0.1.5-rc.3 复检无变化 | `plugins/body-switch/index.js`、`HEARTBEAT.md`、`AGENTS.md`、`skills/engineering/SKILL.md` | ⏳ 实机验证中（需完整睡眠周期） |
-| 2026-09-27 | `2026-09-27-收图能力修复.md` | 收图失效根因 + 修复 | 复盘 | 官方 DeepSeek 适配器把 `inputModalities` 写死 `["text"]`、schema 还丢弃该字段 → 改走 pi-ai 路由（schema 认 `input`） | `settings.yaml`、`dsh-llm-deepseek`、`dsh-llm-pi-ai` | ⏳ 待重启后实读验证 |
+| 2026-09-27 | `2026-09-27-收图能力修复.md` | 收图失效根因 + 修复 | 复盘 | **定案：3080 跑的是旧版 0.1.0-rc.6（bat 指错缓存），该版适配器硬编码 `inputModalities=["text"]` → 改指 0.1.1-rc.2 缓存即通，`read_image` 已实读验证。** 文中前半段「改走 pi-ai 路由」是当时的临时方案，**已撤回**；教训：判断缺陷前先比版本 | `start-jingwen-dev.bat`、`settings.yaml`、`dsh-llm-deepseek` | ✅ 已验证（收图打通） |
 | 2026-09-25 | `2026-09-25-升级调研.md` | DSH 升级调研（第二轮） | 调研 | 0.1.1-rc.2 → 0.1.5-rc.3 定制面 API 零破坏，唯一必做迁移 `persona text → prefix`；附 runner 临时目录回归 | `settings.yaml`、preset、bat | ✅ 有结论 |
 | 2026-09-23 | `2026-09-23.md` | memory-recall 启动崩溃复盘 | 复盘 | 误用动态插件环境的 `harness` 全局 → 插件树 fail-fast；教训五条 + v1.1 三修法 | `plugins/memory-recall/`、patch | ✅ 已修复验收 |
 | 2026-09-22 | `2026-09-22.md` | 记忆召回上线 | 落地 | `sessionQuery` 落盘持久索引 + `@sue/memory-recall` 两工具（跨会话搜 / 会话内深挖） | `plugins/memory-recall/`、`cordis.patch.yml` | ⏳ 回填不全（主会话 0 条入索引） |
