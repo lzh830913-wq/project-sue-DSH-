@@ -13,8 +13,8 @@
 
 | 日期 | 文件 | 主题 | 类型 | 一句话 | 涉及文件 | 状态 |
 |---|---|---|---|---|---|---|
+| 2026-09-27 | `2026-09-27-心跳三连修.md` | 心跳三连修 + 桌面版调研 + 版本复检 | 落地+调研 | 修 480 死锁（自然醒浮上冷却链）；睡眠时长灵活化（意图+`sleep_hours`+困意反推）；领地铁律定稿；桌面版=Electron 壳（观望）；0.1.5-rc.3 复检无变化 | `plugins/body-switch/index.js`、`HEARTBEAT.md`、`AGENTS.md`、`skills/engineering/SKILL.md` | ⏳ 实机验证中（需完整睡眠周期） |
 | 2026-09-27 | `2026-09-27-收图能力修复.md` | 收图失效根因 + 修复 | 复盘 | 官方 DeepSeek 适配器把 `inputModalities` 写死 `["text"]`、schema 还丢弃该字段 → 改走 pi-ai 路由（schema 认 `input`） | `settings.yaml`、`dsh-llm-deepseek`、`dsh-llm-pi-ai` | ⏳ 待重启后实读验证 |
-| 2026-09-27 | — | — | — | （心跳三连修：480 死锁 / `sleep_hours` 灵活化 / 领地铁律：**日志待补**） | `plugins/body-switch/index.js` | ⏳ 待补 |
 | 2026-09-25 | `2026-09-25-升级调研.md` | DSH 升级调研（第二轮） | 调研 | 0.1.1-rc.2 → 0.1.5-rc.3 定制面 API 零破坏，唯一必做迁移 `persona text → prefix`；附 runner 临时目录回归 | `settings.yaml`、preset、bat | ✅ 有结论 |
 | 2026-09-23 | `2026-09-23.md` | memory-recall 启动崩溃复盘 | 复盘 | 误用动态插件环境的 `harness` 全局 → 插件树 fail-fast；教训五条 + v1.1 三修法 | `plugins/memory-recall/`、patch | ✅ 已修复验收 |
 | 2026-09-22 | `2026-09-22.md` | 记忆召回上线 | 落地 | `sessionQuery` 落盘持久索引 + `@sue/memory-recall` 两工具（跨会话搜 / 会话内深挖） | `plugins/memory-recall/`、`cordis.patch.yml` | ⏳ 回填不全（主会话 0 条入索引） |
@@ -31,7 +31,7 @@
 
 - **08-25 ~ 08-31**：有计划期，见 `2026-09-01.md` 开头的「断档说明」。
 - **09-11 ~ 09-17**：**机器关机 8 天**（换显卡 RTX 4070 Ti SUPER 16GB + 装驱动）——那 8 天没有任何进展可记。
-- **09-27**：三项心跳修复（480 死锁 / `sleep_hours` / 领地铁律）+ 本次记录机制补建，**日志待补**（本行即为待办锚点）。
+- **09-27**：两条会话并行——心跳线（`2026-09-27-心跳三连修.md`）与模型线（`2026-09-27-收图能力修复.md`）**均已补记完成**。
 
 ## 怎么加一篇（三步）
 
