@@ -94,7 +94,14 @@ function applyRhythm(body, now) {
 }
 
 function beatIntervalSeconds(body) {
-  if (body.mood === '休眠') return 480 * 60
+  if (body.mood === '休眠') {
+    // 睡眠时长：她可声明 sleep_hours（午睡/过夜，意图的精确粒度）；
+    // 不声明 → 由困意反推（节律困度 ÷ 10 = 小时）——困得越深睡越长，身体决定，像真人。
+    const declared = typeof body.sleep_hours === 'number' && body.sleep_hours > 0 ? body.sleep_hours : 0
+    if (declared > 0) return Math.round(declared * 3600)
+    const f = typeof body.fatigue === 'number' ? body.fatigue : 40
+    return Math.round(Math.max(0.5, f / 10) * 3600)
+  }
   if (body.mood === '炽热') return 5 * 60 // 亲密互动：5 分钟一拍（打字节奏下足够密；她的时间感官+催促的合法性）
   if (body.mood === '余韵') return 10 * 60 // 高潮后的余温：一轮心跳后自然回冷却链
   const beats = typeof body.cool_beats === 'number' ? body.cool_beats : 2
@@ -108,10 +115,11 @@ function cooldownMoodWord(beats) {
   return COOLDOWN_MOODS[idx]
 }
 
-/** 按 mood 取心跳感知种子：炽热/余韵有专属语境，其余按扑空次数取冷却种子。 */
+/** 按 mood 取心跳感知种子：休眠到期醒来有专属种子，炽热/余韵有专属语境，其余按扑空次数取冷却种子。 */
 async function beatSeed(cwd, beats, mood) {
   let key = null
-  if (mood === '炽热') key = 'intimate'
+  if (mood === '休眠') key = 'sleep-wake'
+  else if (mood === '炽热') key = 'intimate'
   else if (mood === '余韵') key = 'afterglow'
   try {
     const md = await readFile(join(cwd, 'HEARTBEAT.md'), 'utf8')
