@@ -343,15 +343,17 @@ export function apply(ctx) {
         source: { kind: 'plugin', plugin: 'nervous-system' },
       })
       agent.followup(message)
-      // 扑空 +1 与主权词写回：炽热/休眠是她的主权词，脊髓不覆盖（炽热可随时被她写回）。
-      // 炽热下扑空累积满（他真的走了）→ 退到「惦记」（炽热冷却的第一站），再自然落回闲适。
+      // 扑空 +1 与主权词写回：炽热/休眠是她的主权词，脊髓不覆盖——唯一的例外：
+      // 休眠下 480 到点的这次心跳 = 自然醒，脊髓把她浮上冷却链（惦记 · 30 分钟档）。
+      // 她想继续睡，随时可以再写休眠——那是她的决定。
       const nextBeats = Math.min(beats + 1, COOLDOWN_TABLE.length - 1)
       try {
         const { signal: sigNow, path: pNow } = await readSignal(cwd)
         const nb = sigNow ?? {}
         nb.cool_beats = nextBeats
-        if (nb.mood === '炽热' && nextBeats >= COOLDOWN_TABLE.length - 1) nb.mood = cooldownMoodWord(1)
-        else if (nb.mood !== '休眠' && nb.mood !== '炽热' && nb.mood !== '余韵') nb.mood = cooldownMoodWord(nextBeats)
+        if (nb.mood === '休眠') nb.mood = cooldownMoodWord(1) // 自然醒：浮上冷却链
+        else if (nb.mood === '炽热' && nextBeats >= COOLDOWN_TABLE.length - 1) nb.mood = cooldownMoodWord(1)
+        else if (nb.mood !== '炽热' && nb.mood !== '余韵') nb.mood = cooldownMoodWord(nextBeats)
         nb.fatigue = body.fatigue
         nb.overslept = body.overslept ?? false
         await writeFile(pNow ?? join(cwd, SIGNAL_FILE), JSON.stringify(nb, null, 2), 'utf8')
