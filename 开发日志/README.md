@@ -13,6 +13,7 @@
 
 | 日期 | 文件 | 主题 | 类型 | 一句话 | 涉及文件 | 状态 |
 |---|---|---|---|---|---|---|
+| 2026-09-27 | `2026-09-27-meow-memory调研.md` | meow-memory 能否直接用 | 调研 | **结论：可直接用**——不干扰人格 / 不干扰心跳（我们只认 `source.kind==='user'`）/ DSH 本体无同名 dream 机制；与 memory-recall 是互补（蒸馏层 vs 原始层）；⚠️ 它教模型用 `zstdDecompressSync` 搜原始日志是**错的**（只解第一帧）。**未采用，待老刘决定** | `.dsh-meow/`、`cordis.patch.yml` | 📦 调研完成 |
 | 2026-09-27 | `2026-09-27-心跳三连修.md` | 心跳三连修 + 桌面版调研 + 版本复检 | 落地+调研 | 修 480 死锁（自然醒浮上冷却链）；睡眠时长灵活化（意图+`sleep_hours`+困意反推）；领地铁律定稿；桌面版=Electron 壳（观望）；0.1.5-rc.3 复检无变化 | `plugins/body-switch/index.js`、`HEARTBEAT.md`、`AGENTS.md`、`skills/engineering/SKILL.md` | ⏳ 实机验证中（需完整睡眠周期） |
 | 2026-09-27 | `2026-09-27-收图能力修复.md` | 收图失效根因 + 修复 | 复盘 | **定案：3080 跑的是旧版 0.1.0-rc.6（bat 指错缓存），该版适配器硬编码 `inputModalities=["text"]` → 改指 0.1.1-rc.2 缓存即通，`read_image` 已实读验证。** 文中前半段「改走 pi-ai 路由」是当时的临时方案，**已撤回**；教训：判断缺陷前先比版本 | `start-jingwen-dev.bat`、`settings.yaml`、`dsh-llm-deepseek` | ✅ 已验证（收图打通） |
 | 2026-09-25 | `2026-09-25-升级调研.md` | DSH 升级调研（第二轮） | 调研 | 0.1.1-rc.2 → 0.1.5-rc.3 定制面 API 零破坏，唯一必做迁移 `persona text → prefix`；附 runner 临时目录回归 | `settings.yaml`、preset、bat | ✅ 有结论 |
