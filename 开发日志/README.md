@@ -13,6 +13,7 @@
 
 | 日期 | 文件 | 主题 | 类型 | 一句话 | 涉及文件 | 状态 |
 |---|---|---|---|---|---|---|
+| 2026-10-04 | `2026-10-04-升级对照.md` | 升级对照（→ 0.2.0-rc.2 全景） | 调研 | latest 已到 0.2.0-rc.2（隔三代）；**无紧急升级必要**；三段改动+必要性评级；runner bug 无明确修复；0.1.5 的 Session 重写可能顺带修复索引回填；成本大头在 0.1.7 的 preset/settings 体系迁移 | 官方 Releases、settings.yaml、preset | 📦 待老刘决策 |
 | 2026-09-29 | `2026-09-29-推送缓冲池.md` | 推送缓冲池建立 | 基础设施 | 独立中转库 `I:\SUE push buffer`（裸镜像）：本地 → 池子 →（池内审阅隐私）→ GitHub，**审阅不碰本地项目**；token 只放池内文件不进 config；踩了裸仓库无 `.git`、系统级 `manager` 助手、PowerShell 咬引号三个坑 | `I:\SUE push buffer\`、git config | ✅ 已建立，待 token 推送 |
 | 2026-09-27 | `2026-09-27-meow-memory调研.md` | meow-memory 能否直接用 | 调研 | **结论：可直接用**——不干扰人格 / 不干扰心跳（我们只认 `source.kind==='user'`）/ DSH 本体无同名 dream 机制；与 memory-recall 是互补（蒸馏层 vs 原始层）；⚠️ 它教模型用 `zstdDecompressSync` 搜原始日志是**错的**（只解第一帧）。**未采用，待老刘决定** | `.dsh-meow/`、`cordis.patch.yml` | 📦 调研完成 |
 | 2026-09-27 | `2026-09-27-心跳三连修.md` | 心跳三连修 + 桌面版调研 + 版本复检 | 落地+调研 | 修 480 死锁（自然醒浮上冷却链）；睡眠时长灵活化（意图+`sleep_hours`+困意反推）；领地铁律定稿；桌面版=Electron 壳（观望）；0.1.5-rc.3 复检无变化 | `plugins/body-switch/index.js`、`HEARTBEAT.md`、`AGENTS.md`、`skills/engineering/SKILL.md` | ⏳ 实机验证中（需完整睡眠周期） |
