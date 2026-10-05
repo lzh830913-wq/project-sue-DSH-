@@ -13,6 +13,7 @@
 
 | 日期 | 文件 | 主题 | 类型 | 一句话 | 涉及文件 | 状态 |
 |---|---|---|---|---|---|---|
+| 2026-10-04 | `2026-10-04-每日醒来机制设计.md` | 「每日醒来」机制设计定案 | 定案 | **两种醒来一套梳妆**：结束标+睡前交接 → 苏醒信号 → fork 新 session → 完整梳妆；传递矩阵（同人格✅/表→里✅/里→表❌）；打招呼=在场判断；提示词上限查证（AGENTS.md 64KB 可调、persona 无上限） | `nervous-system`、bedtime-routine、preset | 📐 **定案待开工**（4 项待老刘拍板） |
 | 2026-10-04 | `2026-10-04-升级对照.md` | 升级对照（→ 0.2.0-rc.2 全景） | 调研 | latest 已到 0.2.0-rc.2（隔三代）；**无紧急升级必要**；三段改动+必要性评级；runner bug 无明确修复；0.1.5 的 Session 重写可能顺带修复索引回填；成本大头在 0.1.7 的 preset/settings 体系迁移 | 官方 Releases、settings.yaml、preset | 📦 待老刘决策 |
 | 2026-09-29 | `2026-09-29-推送缓冲池.md` | 推送缓冲池建立 | 基础设施 | 独立中转库 `I:\SUE push buffer`（裸镜像）：本地 → 池子 →（池内审阅隐私）→ GitHub，**审阅不碰本地项目**；token 只放池内文件不进 config；踩了裸仓库无 `.git`、系统级 `manager` 助手、PowerShell 咬引号三个坑 | `I:\SUE push buffer\`、git config | ✅ 已建立，待 token 推送 |
 | 2026-09-27 | `2026-09-27-meow-memory调研.md` | meow-memory 能否直接用 | 调研 | **结论：可直接用**——不干扰人格 / 不干扰心跳（我们只认 `source.kind==='user'`）/ DSH 本体无同名 dream 机制；与 memory-recall 是互补（蒸馏层 vs 原始层）；⚠️ 它教模型用 `zstdDecompressSync` 搜原始日志是**错的**（只解第一帧）。**未采用，待老刘决定** | `.dsh-meow/`、`cordis.patch.yml` | 📦 调研完成 |
