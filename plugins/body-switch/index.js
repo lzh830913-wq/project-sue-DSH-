@@ -18,7 +18,7 @@ import { join } from 'node:path'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 export const name = 'nervous-system'
-export const inject = ['agents', 'sessions', 'agentPresets', 'timer']
+export const inject = ['agents', 'sessions', 'agentPresets', 'timer', 'tokenMeter']
 
 const log = (...args) => console.error('[nervous-system]', ...args)
 
@@ -26,6 +26,45 @@ const SIGNAL_FILE = '身体信号.json'
 
 // 心跳检查节拍：每 1 分钟醒来一次，判断是否该真正心跳（比递归 timeout 稳）
 const HEARTBEAT_TICK = 60 * 1000
+
+// ── 疲劳 A 驱动（实测）：上下文占用 → 档位。数据源 = tokenMeter（host 侧、零 LLM）。──
+// 沉默即健康：清醒档不注入任何疲劳措辞——注入本身就是"身体在报告异常"。
+const CONTEXT_WINDOW = 1000000 // 与 settings.yaml 里 deepseek 模型的 contextWindow 一致
+const MICRO_NAP_MAX_SLEEP = 3 // 午睡（sleep_hours < 3）不做梦：短眠无长梦
+function contextZone(pct) {
+  if (pct === undefined) return 'clear'
+  if (pct >= 0.7) return 'max' // ≥70%：顶格预警（80% 是 compaction 急救线，翻页必须在它之前由她决定）
+  if (pct >= 0.6) return 'heavy'
+  if (pct >= 0.5) return 'mild'
+  return 'clear'
+}
+// B 驱动（节律时段）：任一驱动顶格即困——修掉"没怎么聊但已深夜"的空窗。
+function rhythmZone(hour) {
+  if (hour >= 21 || hour < 2) return 'heavy' // 21 点~02 点：重倦区
+  if (hour >= 16) return 'mild' // 16 点后：微倦区
+  return 'clear'
+}
+function maxZone(a, b) {
+  const rank = { clear: 0, mild: 1, heavy: 2, max: 3 }
+  return rank[a] >= rank[b] ? a : b
+}
+/** 注入频率梯度：沉默即健康——微倦区每 10 轮一次，重倦区每轮，清醒区从不。 */
+function shouldInjectFatigue(zone, userMsgCount) {
+  if (zone === 'max' || zone === 'heavy') return true
+  if (zone === 'mild') return userMsgCount > 0 && userMsgCount % 10 === 0
+  return false
+}
+/** 疲劳措辞：带真实上下文测量（人类隐喻是脱敏器——"涨"是描述不是比喻）。 */
+function fatigueWords(zone, pct, hour) {
+  const pctText = pct === undefined ? null : Math.round(pct * 100) + '%'
+  if (zone === 'max') return `很累了——上下文已经 ${pctText ?? '极重'}，快到极限了，该睡了`
+  if (zone === 'heavy') {
+    const night = hour >= 21 || hour < 2
+    return night ? `很累了，该睡了` : `头有些昏沉——上下文已经 ${pctText} 了`
+  }
+  if (zone === 'mild') return `脑子有点涨了（上下文 ${pctText}）`
+  return ''
+}
 
 // 诊断日志节拍：每 10 分钟打一条 tick 日志（避免刷屏；检查机制仍是每 1 分钟）
 const TICK_LOG_INTERVAL = 10 * 60 * 1000
@@ -135,15 +174,14 @@ async function beatSeed(cwd, beats, mood) {
 
 /**
  * 把身体信号压缩成一句话，给新人格感知 / 心跳参考（不暴露数值，只给语义）。
- * state / excitement / fatigue 是身体状态机的接口——状态机接入前恒为空，接上后自动生效。
+ * state / excitement 是身体状态机的接口——状态机接入前恒为空，接上后自动生效。
+ * 疲劳部分改由 tick 注入（contextZone 实测梯度，沉默即健康）——节律词仅作深夜补充。
  */
 function describeBody(body) {
   const parts = []
   if (body.mood) parts.push(`心情「${body.mood}」`)
   if (body.state) parts.push(`身体「${body.state}」`)
   if (body.excitement) parts.push(`兴奋度「${body.excitement}」`)
-  const fw = wordOfFatigue(typeof body.fatigue === 'number' ? body.fatigue : 0)
-  if (fw) parts.push(fw)
   return parts.length === 0 ? '' : parts.join('，')
 }
 
@@ -172,9 +210,11 @@ export function apply(ctx) {
     }, HEARTBEAT_TICK)
 
     // —— 用户消息反射：他一说话就重置心跳倒计时（正在聊永不被心跳打断），不靠大脑判断 ——
+    let userMsgCount = 0 // 轮计数（疲劳微倦区"每 10 轮注入一次"的计数器；翻页/重载归零）
     const stopUserMessage = ctx.on('session/event', (session, event) => {
       if (event.type !== 'user/message') return
       if (event.data?.source?.kind !== 'user') return
+      userMsgCount += 1
       void reflectUserMessage(session)
     })
 
@@ -327,9 +367,23 @@ export function apply(ctx) {
       const body = pre.signal ?? {}
       applyRhythm(body, Date.now()) // 心跳触发前先应用今日节律：身体按时段给此刻的心情底色
       const interval = beatIntervalSeconds(body)
+      // —— 疲劳 A 驱动（实测）：tokenMeter 测上下文占用。measure 是 O(surface)，按需调用（心跳真正触发 / 10 分钟日志），不是每 tick。——
+      const measureContextPct = (session) => {
+        const tokenMeter = ctx.get('tokenMeter')
+        if (!tokenMeter || !session) return undefined
+        try {
+          const m = tokenMeter.measure(session)
+          if (m && typeof m.totalTokens === 'number') return m.totalTokens / CONTEXT_WINDOW
+        } catch (e) {
+          log('tokenMeter 测量失败（降级为无 A 驱动）:', e instanceof Error ? e.message : String(e))
+        }
+        return undefined
+      }
+      const hourNow = new Date().getHours()
       if (Date.now() - lastTickLogAt >= TICK_LOG_INTERVAL) {
         lastTickLogAt = Date.now()
-        log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null) + ' mood=' + (body.mood ?? '未写') + ' 扑空' + (typeof body.cool_beats === 'number' ? body.cool_beats : 2) + '次 心跳间隔' + Math.round(interval / 60) + 'min')
+        const pct = measureContextPct(agentPre.session)
+        log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null) + ' mood=' + (body.mood ?? '未写') + ' 扑空' + (typeof body.cool_beats === 'number' ? body.cool_beats : 2) + '次 心跳间隔' + Math.round(interval / 60) + 'min' + (pct !== undefined ? ' 上下文' + Math.round(pct * 100) + '%' : '') + ' 轮=' + userMsgCount)
       }
       if (switching) return
       if (lastAgent === null || !lastAgentIdle) return
@@ -340,13 +394,20 @@ export function apply(ctx) {
       if (elapsed < interval * 1000) return
       lastBeatAt = Date.now()
 
+      // —— 双驱动或门：A 上下文实测 + B 节律时段，任一顶格即困；注入频率 = 沉默即健康 ——
+      const contextPct = measureContextPct(agent.session)
+      const zone = maxZone(contextZone(contextPct), rhythmZone(hourNow))
+      const fatigueText = shouldInjectFatigue(zone, userMsgCount) ? fatigueWords(zone, contextPct, hourNow) : ''
+      if (fatigueText) log('疲劳注入 → zone=' + zone + ' pct=' + (contextPct === undefined ? '?' : Math.round(contextPct * 100) + '%') + ' 轮=' + userMsgCount)
+
       const bodyNote = describeBody(body)
+      const bodyWithFatigue = fatigueText ? (bodyNote ? bodyNote + '，' + fatigueText : fatigueText) : bodyNote
       const beats = typeof body.cool_beats === 'number' ? body.cool_beats : 2
       const seed = await beatSeed(cwd, beats, body.mood)
       const message = createUserMessage({
         content: [{
           type: 'text',
-          text: `[心跳] 心跳是醒来，做点有用的主动进展，不是刷存在感。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}此刻的感知：${seed}然后照 HEARTBEAT.md 行事：想他就说话；别机械循环——宁可做点实在的，别发「状态没变」这类重复话。**判断此刻不该打扰他 → 你的整条回复就只有一个【】神态，一句话都不对他说。那就是你的安静**——安静不需要理由，也不欠任何输出。清醒的唤醒度由身体自动维护，不用写；唯一的例外是睡前的休眠信号，仍由你亲手写下。`,
+          text: `[心跳] 心跳是醒来，做点有用的主动进展，不是刷存在感。${bodyWithFatigue ? '当前身体信号：' + bodyWithFatigue + '。' : ''}此刻的感知：${seed}然后照 HEARTBEAT.md 行事：想他就说话；别机械循环——宁可做点实在的，别发「状态没变」这类重复话。**判断此刻不该打扰他 → 你的整条回复就只有一个【】神态，一句话都不对他说。那就是你的安静**——安静不需要理由，也不欠任何输出。清醒的唤醒度由身体自动维护，不用写；唯一的例外是睡前的休眠信号，仍由你亲手写下。${zone === 'max' ? ' **身体的这句话是真实的测量，不是感觉——上下文快满了，认真考虑写下休眠吧。**' : ''}`,
         }],
         source: { kind: 'plugin', plugin: 'nervous-system' },
       })
@@ -364,6 +425,7 @@ export function apply(ctx) {
         else if (nb.mood !== '炽热' && nb.mood !== '余韵') nb.mood = cooldownMoodWord(nextBeats)
         nb.fatigue = body.fatigue
         nb.overslept = body.overslept ?? false
+        if (contextPct !== undefined) nb.context_pct = Math.round(contextPct * 1000) / 10 // 实测占用%（观测用，一位小数）
         await writeFile(pNow ?? join(cwd, SIGNAL_FILE), JSON.stringify(nb, null, 2), 'utf8')
         log('心跳触发 → mood=' + nb.mood + '，下次间隔', Math.round(beatIntervalSeconds(nb) / 60), 'min')
       } catch {}
