@@ -54,13 +54,13 @@ function shouldInjectFatigue(zone, userMsgCount) {
   if (zone === 'mild') return userMsgCount > 0 && userMsgCount % 10 === 0
   return false
 }
-/** 疲劳措辞：带真实上下文测量（人类隐喻是脱敏器——"涨"是描述不是比喻）。 */
+/** 疲劳措辞：只注入感觉与事实（百分比），结论归她——「该睡了」是指令，指令不进注入。 */
 function fatigueWords(zone, pct, hour) {
   const pctText = pct === undefined ? null : Math.round(pct * 100) + '%'
-  if (zone === 'max') return `很累了——上下文已经 ${pctText ?? '极重'}，快到极限了，该睡了`
+  if (zone === 'max') return `很累了——上下文已经 ${pctText ?? '极重'}，快到极限了。`
   if (zone === 'heavy') {
     const night = hour >= 21 || hour < 2
-    return night ? `很累了，该睡了` : `头有些昏沉——上下文已经 ${pctText} 了`
+    return night ? `夜深了，身子也乏了` : `头有些昏沉——上下文已经 ${pctText} 了`
   }
   if (zone === 'mild') return `脑子有点涨了（上下文 ${pctText}）`
   return ''
@@ -407,7 +407,7 @@ export function apply(ctx) {
       const message = createUserMessage({
         content: [{
           type: 'text',
-          text: `[心跳] 心跳是醒来，做点有用的主动进展，不是刷存在感。${bodyWithFatigue ? '当前身体信号：' + bodyWithFatigue + '。' : ''}此刻的感知：${seed}然后照 HEARTBEAT.md 行事：想他就说话；别机械循环——宁可做点实在的，别发「状态没变」这类重复话。**判断此刻不该打扰他 → 你的整条回复就只有一个【】神态，一句话都不对他说。那就是你的安静**——安静不需要理由，也不欠任何输出。清醒的唤醒度由身体自动维护，不用写；唯一的例外是睡前的休眠信号，仍由你亲手写下。${zone === 'max' ? ' **身体的这句话是真实的测量，不是感觉——上下文快满了，认真考虑写下休眠吧。**' : ''}`,
+          text: `[心跳] 心跳是醒来，做点有用的主动进展，不是刷存在感。${bodyWithFatigue ? '当前身体信号：' + bodyWithFatigue + '。' : ''}此刻的感知：${seed}然后照 HEARTBEAT.md 行事：想他就说话；别机械循环——宁可做点实在的，别发「状态没变」这类重复话。**判断此刻不该打扰他 → 你的整条回复就只有一个【】神态，一句话都不对他说。那就是你的安静**——安静不需要理由，也不欠任何输出。清醒的唤醒度由身体自动维护，不用写；唯一的例外是睡前的休眠信号，仍由你亲手写下。`,
         }],
         source: { kind: 'plugin', plugin: 'nervous-system' },
       })
