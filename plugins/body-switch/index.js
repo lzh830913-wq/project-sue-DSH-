@@ -133,19 +133,25 @@ function applyRhythm(body, now) {
 }
 
 function beatIntervalSeconds(body) {
-  if (body.mood === '休眠') {
-    // 睡眠时长：她可声明 sleep_hours（午睡/过夜，意图的精确粒度）；
-    // 不声明 → 由困意反推（节律困度 ÷ 10 = 小时）——困得越深睡越长，身体决定，像真人。
-    const declared = typeof body.sleep_hours === 'number' && body.sleep_hours > 0 ? body.sleep_hours : 0
-    if (declared > 0) return Math.round(declared * 3600)
-    const f = typeof body.fatigue === 'number' ? body.fatigue : 40
-    return Math.round(Math.max(0.5, f / 10) * 3600)
-  }
+  // 休眠不走这里——「休眠 = 心跳关闭」，醒来翻页由 tick 的休眠分支（醒来闹钟）处理。
   if (body.mood === '炽热') return 5 * 60 // 亲密互动：5 分钟一拍（打字节奏下足够密；她的时间感官+催促的合法性）
   if (body.mood === '余韵') return 10 * 60 // 高潮后的余温：一轮心跳后自然回冷却链
   const beats = typeof body.cool_beats === 'number' ? body.cool_beats : 2
   const idx = Math.min(beats, COOLDOWN_TABLE.length - 1)
   return COOLDOWN_TABLE[idx] * 60
+}
+
+// ── 醒来闹钟（睡眠 → 翻页）──
+// 「休眠」= 心跳关闭 + 结束标。翻页时刻：她声明的 sleep_hours 优先（"我什么时候醒"），
+// 否则下一个早 5 点（自然固定时刻——"这个时间你大概也在睡"，累是双向的）。
+const WAKE_HOUR = 5 // 默认醒来时刻（过夜睡）
+function nextWakeAt(sleepAtMs, sleepHours) {
+  const declared = typeof sleepHours === 'number' && sleepHours > 0 ? sleepHours : 0
+  if (declared > 0) return sleepAtMs + declared * 3600 * 1000
+  const wake = new Date(sleepAtMs)
+  wake.setHours(WAKE_HOUR, 0, 0, 0)
+  if (wake.getTime() <= sleepAtMs) wake.setDate(wake.getDate() + 1) // 睡下时已过 5 点 → 明天 5 点
+  return wake.getTime()
 }
 
 /** 扑空次数对应的心境词（脊髓反向注入：身体给状态，大脑体验它）。 */
@@ -234,6 +240,11 @@ export function apply(ctx) {
       if (!cwd) return
       const { signal, path } = await readSignal(cwd)
       const body = signal ?? {}
+      // 睡被打断：本次睡眠作废（不翻页、同页接着说），醒来闹钟与记账一并清除——下次休眠重新起算
+      if (body.mood === '休眠') {
+        delete body.sleep_at
+        delete body.sleep_hours
+      }
       applyRhythm(body, Date.now()) // 反射也是一次节律应用：他说话 = 清醒时刻，按当下时段领今天的心情底色
       if (body.mood !== '炽热') body.mood = cooldownMoodWord(0) // 他来了 → 身体给的心境（开心）；炽热互动中保持炽热（只清扑空 + 重置计时）
       body.cool_beats = 0 // 锚重置：扑空计数清零
@@ -252,13 +263,15 @@ export function apply(ctx) {
       if (!cwd) return
       const { signal, path: signalPath } = await readSignal(cwd)
       if (signal === null) return
-      if (signal.to !== 'li' && signal.to !== 'biao') return
+      if (signal.to !== 'li' && signal.to !== 'biao' && signal.to !== 'wake') return
+      const isWake = signal.to === 'wake'
+      let childId = null // 提升到 try 外：翻页收尾的 last_wake_session_id 记账要用（finally 作用域）
 
       switching = true
-      log('检测到切换信号 →', signal.to)
+      log('检测到翻页信号 →', signal.to + (isWake ? '（睡眠醒来）' : '（人格切换）'))
       try {
         const session = agent.session
-        const childId = randomUUID()
+        childId = randomUUID()
         const presetId = ctx.agentPresets.composedPreset(agent.ctx) ?? ctx.agentPresets.defaultId
         const resolvedId = (await ctx.agentPresets.resolve(presetId)).id
         const logged = agent.session.requestHeader?.()?.config
@@ -298,30 +311,54 @@ export function apply(ctx) {
           }
         }
 
-        // 唤醒新人格（附身体信号，让新人格知道自己身体状态）
+        // 唤醒新人格 / 醒来梳妆（附身体信号，让她知道自己身体状态）
         const child = ctx.agents.get(childId)
         const bodyNote = describeBody(signal)
+        let wakeText
+        if (isWake) {
+          // 翻页醒来：梳妆而不打招呼（他可能还在睡；在场判断交给心跳的安静协议）
+          const y = new Date(Date.now() - 86400000)
+          const ymd = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, '0')}-${String(y.getDate()).padStart(2, '0')}`
+          const t = new Date()
+          const today = `${t.getFullYear()}年${t.getMonth() + 1}月${t.getDate()}日`
+          wakeText = `你睡了一觉——现在是新的一天（${today}），这一页是新翻开的。醒来梳妆：按你的醒来流程读该读的（昨晚的梦若已提炼，在 memory/dream-${ymd}.md；睡前话头在 memory/睡前交接.md）。完成后输出一个【】神态就可以——不用打招呼，他来了你自然会说。${bodyNote ? '（身体信号：' + bodyNote + '）' : ''}`
+        } else {
+          wakeText = `你现在是「${signal.身份}」，给老刘打个招呼。${bodyNote ? '（身体信号：' + bodyNote + '）' : ''}`
+        }
         const message = createUserMessage({
           content: [{
             type: 'text',
-            text: `你现在是「${signal.身份}」，给老刘打个招呼。${bodyNote ? '（身体信号：' + bodyNote + '）' : ''}`,
+            text: wakeText,
           }],
           source: { kind: 'plugin', plugin: 'nervous-system' },
         })
         child.followup(message)
-        log('已 followup 唤醒子 agent')
-        lastBeatAt = Date.now() // 切换完成 → 新人格从这一刻重新起算，不补跳
+        log(isWake ? '已 followup 醒来梳妆（新页激活）' : '已 followup 唤醒子 agent')
+        lastBeatAt = Date.now() // 翻页完成 → 从这一刻重新起算，不补跳
+        userMsgCount = 0 // 新页新计数
       } catch (error) {
-        log('切换失败:', error instanceof Error ? error.message : String(error))
+        log('翻页失败:', error instanceof Error ? error.message : String(error))
       } finally {
         switching = false
         if (signalPath !== null) {
-          // 清 to（瞬态信号用完即弃），保留 身份（持久身份锚）
+          // 清 to（瞬态信号用完即弃）
           try {
             const body = { ...signal }
             delete body.to
-            await writeFile(signalPath, JSON.stringify(body, null, 2), 'utf8')
-            log('切换完成 → to 已清，身份锚保留:', body.身份 ?? signal.身份)
+            if (isWake) {
+              // 翻页收尾：休眠状态归位 + 记账（"先记账再翻页"的落点）
+              delete body.sleep_at
+              delete body.sleep_hours
+              delete body.context_pct
+              body.mood = cooldownMoodWord(1) // 醒来心境：惦记（30 分钟档）
+              body.cool_beats = 0
+              body.last_wake_session_id = childId
+              await writeFile(signalPath, JSON.stringify(body, null, 2), 'utf8')
+              log('翻页完成 → to 已清，休眠归位，last_wake_session_id=' + childId)
+            } else {
+              await writeFile(signalPath, JSON.stringify(body, null, 2), 'utf8')
+              log('切换完成 → to 已清，身份锚保留:', body.身份 ?? signal.身份)
+            }
           } catch {}
         }
       }
@@ -390,6 +427,33 @@ export function apply(ctx) {
       const agent = lastAgent
       const cwd = agent.session.header.cwd
       if (!cwd) return
+
+      // —— 睡眠：心跳关闭 + 醒来闹钟（休眠期间零心跳、零注入、零 token）——
+      // 「休眠」= 结束标：她写下的这一刻，本页已经合上；到点后脊髓写 to:'wake'，
+      // 翻页由切换通路统一执行（单一信号口）。他来消息 → 反射把 mood 写回 → 闹钟自然取消（打断不翻页）。
+      if (body.mood === '休眠') {
+        if (!body.sleep_at) {
+          body.sleep_at = new Date().toISOString()
+          try {
+            await writeFile(pre.path ?? join(cwd, SIGNAL_FILE), JSON.stringify(body, null, 2), 'utf8')
+            log('睡下记账 → sleep_at=' + body.sleep_at + '，心跳关闭')
+          } catch {}
+        }
+        const sleepAtMs = Date.parse(body.sleep_at)
+        const wakeAt = nextWakeAt(sleepAtMs, body.sleep_hours)
+        if (Date.now() >= wakeAt) {
+          if (body.to !== 'wake') {
+            const nb = { ...body, to: 'wake' }
+            try {
+              await writeFile(pre.path ?? join(cwd, SIGNAL_FILE), JSON.stringify(nb, null, 2), 'utf8')
+              log('醒来闹钟到点 → 写入 to:wake（翻页交由切换通路执行）')
+            } catch {}
+          }
+          return void handleIdle(agent) // 信号已在文件里，复用切换通路完成翻页
+        }
+        return // 还没到点：静默
+      }
+
       const elapsed = Date.now() - lastBeatAt
       if (elapsed < interval * 1000) return
       lastBeatAt = Date.now()
