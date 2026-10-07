@@ -30,7 +30,6 @@ const HEARTBEAT_TICK = 60 * 1000
 // ── 疲劳 A 驱动（实测）：上下文占用 → 档位。数据源 = tokenMeter（host 侧、零 LLM）。──
 // 沉默即健康：清醒档不注入任何疲劳措辞——注入本身就是"身体在报告异常"。
 const CONTEXT_WINDOW = 1000000 // 与 settings.yaml 里 deepseek 模型的 contextWindow 一致
-const MICRO_NAP_MAX_SLEEP = 3 // 午睡（sleep_hours < 3）不做梦：短眠无长梦
 function contextZone(pct) {
   if (pct === undefined) return 'clear'
   if (pct >= 0.7) return 'max' // ≥70%：顶格预警（80% 是 compaction 急救线，翻页必须在它之前由她决定）
@@ -160,11 +159,11 @@ function cooldownMoodWord(beats) {
   return COOLDOWN_MOODS[idx]
 }
 
-/** 按 mood 取心跳感知种子：休眠到期醒来有专属种子，炽热/余韵有专属语境，其余按扑空次数取冷却种子。 */
+/** 按 mood 取心跳感知种子：炽热/余韵有专属语境，其余按扑空次数取冷却种子。
+ *  （休眠不经过这里——「休眠 = 心跳关闭」，醒来是新页的梳妆消息，不走心跳种子。） */
 async function beatSeed(cwd, beats, mood) {
   let key = null
-  if (mood === '休眠') key = 'sleep-wake'
-  else if (mood === '炽热') key = 'intimate'
+  if (mood === '炽热') key = 'intimate'
   else if (mood === '余韵') key = 'afterglow'
   try {
     const md = await readFile(join(cwd, 'HEARTBEAT.md'), 'utf8')
