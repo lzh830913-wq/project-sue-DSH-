@@ -124,7 +124,7 @@ function applyRhythm(body, now) {
   const hour = new Date(now).getHours()
   const seg = rhythmSegment(hour)
   body.fatigue = seg.fatigue
-  if (hour >= 0 && hour < 6 && body.mood !== '休眠') body.overslept = true // 凌晨还醒着：熬夜记名
+  if (hour >= 0 && hour < WAKE_HOUR && body.mood !== '休眠') body.overslept = true // 凌晨还醒着：熬夜记名（WAKE_HOUR 前醒着才算熬——5 点翻页醒来是规定动作，不是熬夜）
   if (body.mood === '休眠') body.overslept = false // 正常睡：代价结清，不记名
   if (body.overslept === true && hour >= 6 && hour < 12) {
     body.fatigue = 60 // 熬夜后遗症：上午照困（第二天真的有代价）
