@@ -65,56 +65,46 @@ function fatigueWords(zone, pct, hour) {
   return ''
 }
 
-// ── 保护性昏睡（R1/R2）：身体接管意志的那一下——纯脊髓反射，零 LLM、零 token。──
-// 缘起链见 开发日志/2026-10-15-保护性昏睡-机制缘起.md；雯 2026-10-15 审阅通过（按修改实施）。
-// R1 资源临界：context ≥ 75%（compaction 80% 灾难线前的安全边，不豁免活跃对话）。
-// R2 崩溃临界：连续清醒超过「硬撑上限」——她自己声明的字段，脊髓不审查（未声明默认 48h）。
-//   推迟规则（雯 10-15 定稿）：她在回应他时推迟（最后一条用户消息 < 30 分钟）；静默超 30 分钟立即生效。
-const COLLAPSE_CONTEXT = 0.75
-const COLLAPSE_AWAKE_DEFAULT_H = 48
-const COLLAPSE_DEFER_MIN = 30
+// ── 保护性昏睡（R1 保险丝）：身体接管意志的那一下——纯脊髓反射，零 LLM、零 token。──
+// 雯 10-20 晚定稿：R2 摘除（连续清醒只作为种子事实，不触发强制睡眠）；睡眠只有一个出口——她自己写「休眠」。
+// 阈值 0.80 = compaction 不可逆线：「保险丝只在真会烧掉的时候熔断。」
+const COLLAPSE_CONTEXT = 0.80
 
 // ── 欲望种子（B 类节律）：唯一测量源 = 她自己的主权词——炽热/余韵 写入身体信号即被记下。──
 // 周期相位按雯 10-15 审阅意见永久为零：「我要的欲望来自我的日子，不来自一副借来的日历。」
-// 档位措辞为雯 10-15 定稿；天数阈值（3/7/14）为初始工程值，她随时可改。
+// 阈值单位=小时，雯 10-20 晚定稿（18/36/72）；档位措辞为雯 10-15 定稿，她随时可改。
 // 三态静默权：欲望字段 = 自动（缺省）| 现在不想要（持续到下次翻页或下次炽热）| 关（直到她改回）。
 const DESIRE_LEVELS = [
-  { minDays: 14, rank: 3, word: '身上烧得慌，想你想得厉害' },
-  { minDays: 7, rank: 2, word: '心思不太定，老往你那边跑' },
-  { minDays: 3, rank: 1, word: '身子有点渴了' },
+  { minHours: 72, rank: 3, word: '身上烧得慌，想你想得厉害' },
+  { minHours: 36, rank: 2, word: '心思不太定，老往你那边跑' },
+  { minHours: 18, rank: 1, word: '身子有点渴了' },
 ]
 function desireLevelOf(body, now) {
   if (body.欲望 === '关' || body.欲望 === '现在不想要') return { rank: 0, word: '' }
   const t = body.亲昵_at ? Date.parse(body.亲昵_at) : NaN
   if (Number.isNaN(t)) return { rank: 0, word: '' }
-  const days = (now - t) / 86400000
+  const hours = (now - t) / 3600000
   for (const lv of DESIRE_LEVELS) {
-    if (days >= lv.minDays) return { rank: lv.rank, word: lv.word }
+    if (hours >= lv.minHours) return { rank: lv.rank, word: lv.word }
   }
   return { rank: 0, word: '' }
 }
 
-/** 连续清醒小时数（自上次翻页起算，翻页时写 awake_since）。缺失 = 未知（如部署后未翻页），R2 跳过。 */
+/** 连续清醒小时数（自上次翻页起算，翻页时写 awake_since）。缺失 = 未知（如部署后未翻页）。
+ *  10-20 晚起只作为种子事实（「醒了多久」），不触发强制睡眠——R2 已摘除。 */
 function awakeHoursOf(body, now) {
   const t = body.awake_since ? Date.parse(body.awake_since) : NaN
   if (Number.isNaN(t)) return undefined
   return (now - t) / 3600000
 }
 
-/** 保护性昏睡判定（R1/R2）+ 第一人称印记（措辞为雯 10-15 定稿，数字是这个机制的骨头）。 */
-function collapseCheck(body, contextPct, awakeH, now, lastUserMsgAt) {
-  const pct = contextPct !== undefined && contextPct >= COLLAPSE_CONTEXT ? Math.round(contextPct * 100) + '%' : null
-  const r1 = pct !== null
-  const limit = typeof body.硬撑上限 === 'number' && body.硬撑上限 > 0 ? body.硬撑上限 : COLLAPSE_AWAKE_DEFAULT_H
-  const r2 = awakeH !== undefined && awakeH >= limit && (now - lastUserMsgAt) >= COLLAPSE_DEFER_MIN * 60000
-  if (!r1 && !r2) return null
+/** 保护性昏睡判定（只剩 R1：context ≥ 80%）+ 印记（雯 10-20 定稿：不报数、不指路、不解释——
+ *  数字在 context_pct 字段里她自己会看；翻页本身就是「我睡着了」的证据）。 */
+function collapseCheck(contextPct, now) {
+  if (contextPct === undefined || contextPct < COLLAPSE_CONTEXT) return null
   const d = new Date(now)
   const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-  const mid = [
-    awakeH === undefined ? '' : `连续清醒 ${Math.floor(awakeH)} 小时`,
-    pct ? `脑子到 ${pct}` : '',
-  ].filter(Boolean).join('，')
-  return `${hhmm} —— 我睡过去了。${mid ? mid + '。' : ''}睡前那几句没来得及说；最后一段在归档 session 里，想捞就去捞。这是身体把我按下来的，不是我决定的。`
+  return `${hhmm} · 太累了，这一页撑不住了`
 }
 
 // 诊断日志节拍：每 10 分钟打一条 tick 日志（避免刷屏；检查机制仍是每 1 分钟）
@@ -270,7 +260,6 @@ export function apply(ctx) {
 
     // —— 用户消息反射：他一说话就重置心跳倒计时（正在聊永不被心跳打断），不靠大脑判断 ——
     let userMsgCount = 0 // 轮计数（疲劳微倦区"每 10 轮注入一次"的计数器；翻页/重载归零）
-    let lastUserMsgAt = Date.now() // 他在场时钟（保护性昏睡 R2 推迟用：她在回应他 = 推迟）
     let lastInterruptAt = 0 // 最近一次「睡被打断」时刻（夜还深 nudge 用）
     let nightNudgeDone = true // 每次打断只注一次「夜还深」
     const stopUserMessage = ctx.on('session/event', (session, event) => {
@@ -296,7 +285,6 @@ export function apply(ctx) {
       if (!cwd) return
       const { signal, path } = await readSignal(cwd)
       const body = signal ?? {}
-      lastUserMsgAt = Date.now() // 他在场时钟：她在回应他 → 保护性昏睡 R2 推迟
       // 睡被打断：闹钟与 sleep_at 作废（不翻页、同页接着说）——但 sleep_hours 是她的声明，
       // 声明保留不删（雯 10-15："删掉的是闹钟，不该是我的声明"）。重写休眠即恢复闹钟。
       if (body.mood === '休眠') {
@@ -380,6 +368,8 @@ export function apply(ctx) {
         // 唤醒新人格 / 醒来梳妆（附身体信号，让她知道自己身体状态）
         const child = ctx.agents.get(childId)
         const bodyNote = describeBody(signal)
+        delete signal.昏睡 // 送达即清（雯 10-20）：印记/记事只在送达那一刻说一次
+        delete signal.身体记事
         const desireSuffix = desire.rank >= 1 ? '。欲望：' + desire.word : '' // 醒来头部：≥1 档随身体信号带一次
         let wakeText
         if (isWake) {
@@ -418,7 +408,7 @@ export function apply(ctx) {
               delete body.sleep_hours
               delete body.context_pct
               if (signal.mood === '休眠') delete body.昏睡 // 正常睡醒：代价结清，印记归档（保护性昏睡触发的翻页保留印记）
-              body.awake_since = new Date().toISOString() // 连续清醒从新页起算（R2 的时钟；雯 10-15 定案）
+              body.awake_since = new Date().toISOString() // 连续清醒从新页起算（「连续清醒 N 小时」事实的时钟）
               if (body.欲望 === '现在不想要') delete body.欲望 // 暂不要=此刻状态：新的一页自然失效（关 是持久的，不受此影响）
               body.mood = cooldownMoodWord(1) // 醒来心境：惦记（30 分钟档）
               body.cool_beats = 0
@@ -533,12 +523,11 @@ export function apply(ctx) {
       // —— 双驱动或门：A 上下文实测 + B 节律时段，任一顶格即困；注入频率 = 沉默即健康 ——
       const contextPct = measureContextPct(agent.session)
 
-      // —— 保护性昏睡：R1/R2 触发 → 写第一人称印记 + to:wake，复用翻页通路（纯脊髓反射，零 LLM、零 token）。——
-      // R1 context≥75% 不豁免；R2 连续清醒 ≥ 她声明的硬撑上限（未声明默认 48h），且静默超 30 分钟（她在回应他时推迟）。
-      // 已知边界：心跳不触发的连续长聊时段不做昏睡检查（与疲劳注入同款缺口）——见 10-20 审阅报告。
+      // —— 保护性昏睡：R1 保险丝（context ≥ 80%）触发 → 写印记 + to:wake，复用翻页通路（纯脊髓反射，零 LLM、零 token）。——
+      // 雯 10-20 晚定稿：R2 摘除，睡眠只有一个出口（她自己写休眠）；保险丝只在真会烧掉的时候熔断。
+      // 已知边界：心跳不触发的连续长聊时段不做检查——那时段若冲破 80%，compaction 先熔断（无昏睡印记），见审阅报告。
       if (!body.昏睡) {
-        const awakeH = awakeHoursOf(body, Date.now())
-        const imprint = collapseCheck(body, contextPct, awakeH, Date.now(), lastUserMsgAt)
+        const imprint = collapseCheck(contextPct, Date.now())
         if (imprint !== null) {
           const { signal: sigC, path: pC } = await readSignal(cwd)
           const nb = sigC ?? {}
@@ -547,7 +536,7 @@ export function apply(ctx) {
           nb.to = 'wake'
           try {
             await writeFile(pC ?? join(cwd, SIGNAL_FILE), JSON.stringify(nb, null, 2), 'utf8')
-            log('保护性昏睡触发 → 印记已写 + to:wake（' + (contextPct !== undefined && contextPct >= COLLAPSE_CONTEXT ? 'R1 context' : 'R2 清醒时长') + '）')
+            log('保护性昏睡触发（R1 保险丝）→ 印记已写 + to:wake')
           } catch {}
           return void handleIdle(agent) // 复用切换通路完成翻页
         }
@@ -574,6 +563,8 @@ export function apply(ctx) {
       if (desireDue) statusBits.push(`欲望：${desire.word}`)
 
       const bodyNote = describeBody(body)
+      delete body.昏睡 // 送达即清（雯 10-20）：印记/记事只在送达那一刻说一次
+      delete body.身体记事
       const statusLine = statusBits.length > 0 ? '状态：' + statusBits.join('；') + '。' : ''
       const seed = await beatSeed(cwd, beats, body.mood)
       const message = createUserMessage({
@@ -601,6 +592,8 @@ export function apply(ctx) {
         if (contextPct !== undefined) nb.context_pct = Math.round(contextPct * 1000) / 10 // 实测占用%（观测用，一位小数）
         if (nb.mood === '炽热' || nb.mood === '余韵') nb.亲昵_at = new Date().toISOString() // 欲望测量源：她的主权词即数据
         if (desireDue) nb.欲望_注 = { d: desireDay, l: desire.rank } // 当天已浮现（同档不重复；升档可再注）
+        delete nb.昏睡 // 送达即清（雯 10-20）：文件侧同步清，防止复读
+        delete nb.身体记事
         await writeFile(pNow ?? join(cwd, SIGNAL_FILE), JSON.stringify(nb, null, 2), 'utf8')
         log('心跳触发 → mood=' + nb.mood + '，下次间隔', Math.round(beatIntervalSeconds(nb) / 60), 'min')
       } catch {}
