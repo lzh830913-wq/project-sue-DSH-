@@ -25,6 +25,7 @@ start-wen-dev.bat
 .DS_Store
 __MACOSX/
 Thumbs.db
+.tmp-*
 
 # ==== 私人聊天记录（老刘↔Mac静雯，红线，绝不进库；只在根目录）====
 /2026-*-*.md
