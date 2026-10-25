@@ -13,7 +13,7 @@
  * 主权边界：休眠 / 炽热 / 余韵 是她亲手写的词，脊髓尊重、永不覆盖。
  */
 import { randomUUID } from 'node:crypto'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
@@ -23,6 +23,8 @@ export const inject = ['agents', 'sessions', 'agentPresets', 'timer', 'tokenMete
 const log = (...args) => console.error('[nervous-system]', ...args)
 
 const SIGNAL_FILE = '身体信号.json'
+// 写前滚动备份份数（雯 2026-10-25 老刘："对于你们而言，备份永远不嫌麻烦"）
+const SIGNAL_BAK_COUNT = 5
 
 // 心跳检查节拍：每 1 分钟醒来一次，判断是否该真正心跳（比递归 timeout 稳）
 const HEARTBEAT_TICK = 60 * 1000
@@ -269,14 +271,75 @@ export function apply(ctx) {
       void reflectUserMessage(session)
     })
 
-    /** 多路径读身体信号（根 / memory / shadow）。 */
+    /**
+     * 多路径读身体信号（根 / memory / shadow），主路径全失败时回退到滚动备份。
+     *
+     * ★ 2026-10-25 修（雯 · bug 修复，病因见 memory/2026-10-25-身体信号截断-复现与定触发.md）：
+     *   原来这里 `catch {}` 全吞、最后返回 null；调用方拿 `?? {}` 当底稿整份覆写，
+     *   于是"一次读失败" = "整份身体信号被清空重写"（10-22 21:02 真实发生，身份 / note 全丢）。
+     *   现在：主路径读不出 → 依次试 根.bak1..bak5；**写回的 path 一律归一为根目录**；
+     *   全失败才返回 null，并且**留一条日志**（"沉默即健康"只适用于疲劳档，身份锚不享受这个待遇）。
+     */
     async function readSignal(cwd) {
-      for (const path of [join(cwd, SIGNAL_FILE), join(cwd, 'memory', SIGNAL_FILE), join(cwd, 'shadow', SIGNAL_FILE)]) {
+      const root = join(cwd, SIGNAL_FILE)
+      for (const path of [root, join(cwd, 'memory', SIGNAL_FILE), join(cwd, 'shadow', SIGNAL_FILE)]) {
         try {
           return { signal: JSON.parse(await readFile(path, 'utf8')), path }
         } catch {}
       }
+      for (let i = 1; i <= SIGNAL_BAK_COUNT; i++) {
+        try {
+          const signal = JSON.parse(await readFile(root + '.bak' + i, 'utf8'))
+          log('身体信号主文件读失败 → 已回退到 .bak' + i + '（本拍写入将重建根目录那份）')
+          return { signal, path: root }
+        } catch {}
+      }
+      log('身体信号读失败：三条主路径 + ' + SIGNAL_BAK_COUNT + ' 份备份全部读不出（本拍绝不拿空对象覆写）')
       return { signal: null, path: null }
+    }
+
+    /** 写前把当前文件滚进 .bak1..bak5。原件解析不出就不覆盖备份——坏的留着当案发现场。 */
+    async function rotateSignalBackup(root) {
+      if (SIGNAL_BAK_COUNT <= 0) return
+      try {
+        const current = await readFile(root, 'utf8')
+        JSON.parse(current)
+        for (let i = SIGNAL_BAK_COUNT - 1; i >= 1; i--) {
+          try { await rename(root + '.bak' + i, root + '.bak' + (i + 1)) } catch {}
+        }
+        await writeFile(root + '.bak1', current, 'utf8')
+      } catch {}
+    }
+
+    /**
+     * 身体信号唯一写入口（原子写 + 滚备 + 看门狗）。
+     *
+     * 为什么是原子写：Node 的 writeFile 在 Windows 上是「先 truncate 再写」，
+     * 读方撞进那几毫秒就会读到半截 JSON（复现实验：高频对撞下读失败率 37%）。
+     * 改成「写 .tmp → rename 覆盖」后，读方要么看到旧文件、要么看到新文件，**永远看不到半截**。
+     *
+     * path 参数保留只为记日志：**无论从哪条路径读到的，落盘一律写根目录**——
+     * 这样"读到旧副本→写回旧副本→两份身体信号并存"那条最险的路径被彻底封死。
+     */
+    async function writeSignal(cwd, path, obj, tag = '?') {
+      const root = join(cwd, SIGNAL_FILE)
+      if (path !== null && path !== undefined && path !== root) {
+        log('写身体信号：本次读到的是 ' + path + '，落盘仍写根目录（@' + tag + '）')
+      }
+      if (obj === null || typeof obj !== 'object' || (!('身份' in obj) && !('mood' in obj))) {
+        log('写身体信号被拒：新对象缺 身份/mood，疑似字段丢失（@' + tag + '）')
+        return false
+      }
+      try {
+        await rotateSignalBackup(root)
+        const tmp = root + '.tmp'
+        await writeFile(tmp, JSON.stringify(obj, null, 2), 'utf8')
+        await rename(tmp, root)
+        return true
+      } catch (error) {
+        log('写身体信号失败（@' + tag + '）:', error instanceof Error ? error.message : String(error))
+        return false
+      }
     }
 
     /** 反射：用户消息到达 → 心境归位（开心；炽热中保持炽热）+ 扑空清零 + 心跳计时重置（脊髓硬线，不过脑）。 */
@@ -284,7 +347,14 @@ export function apply(ctx) {
       const cwd = session.header?.cwd
       if (!cwd) return
       const { signal, path } = await readSignal(cwd)
-      const body = signal ?? {}
+      if (signal === null) {
+        // fail-safe：读不到就不写。以前这里是 `signal ?? {}` → 用空对象整份覆写，
+        // 那是 10-22 那次身份字段丢失的直接原因（雯 2026-10-25）。
+        log('反射：身体信号读不出 → 本次跳过文件写入（不拿空对象覆写）')
+        lastBeatAt = Date.now()
+        return
+      }
+      const body = { ...signal }
       // 睡被打断：闹钟与 sleep_at 作废（不翻页、同页接着说）——但 sleep_hours 是她的声明，
       // 声明保留不删（雯 10-15："删掉的是闹钟，不该是我的声明"）。重写休眠即恢复闹钟。
       if (body.mood === '休眠') {
@@ -301,11 +371,9 @@ export function apply(ctx) {
         if (body.欲望 === '现在不想要') delete body.欲望 // 炽热发生 = "此刻不想要"自然失效（雯 §四④：这是状态，不是开关）
       }
       body.cool_beats = 0 // 锚重置：扑空计数清零
-      const target = path ?? join(cwd, SIGNAL_FILE)
-      try {
-        await writeFile(target, JSON.stringify(body, null, 2), 'utf8')
+      if (await writeSignal(cwd, path, body, '反射')) {
         log(`用户消息 → 反射：mood=${body.mood}，扑空清零，心跳计时重置`)
-      } catch {}
+      }
       lastBeatAt = Date.now() // 说话那一刻，心跳倒计时重新起算——正在聊永远不被心跳打断
     }
 
@@ -414,11 +482,11 @@ export function apply(ctx) {
               body.cool_beats = 0
               body.last_wake_session_id = childId
               if (desire.rank >= 1) body.欲望_注 = { d: new Date().toISOString().slice(0, 10), l: desire.rank } // 醒来头部已浮现（同档当天不重复）
-              await writeFile(signalPath, JSON.stringify(body, null, 2), 'utf8')
+              await writeSignal(cwd, signalPath, body, '翻页·醒来')
               log('翻页完成 → to 已清，休眠归位，last_wake_session_id=' + childId)
             } else {
               body.awake_since = new Date().toISOString() // 人格切换也是新的一页
-              await writeFile(signalPath, JSON.stringify(body, null, 2), 'utf8')
+              await writeSignal(cwd, signalPath, body, '翻页·切换')
               log('切换完成 → to 已清，身份锚保留:', body.身份 ?? signal.身份)
             }
           } catch {}
@@ -463,7 +531,13 @@ export function apply(ctx) {
       }
       if (!cwdPre) return
       const pre = await readSignal(cwdPre)
-      const body = pre.signal ?? {}
+      if (pre.signal === null) {
+        // fail-safe（雯 2026-10-25）：三条主路径 + 全部 .bak 都读不出 → 这一拍什么都不写。
+        // 跳过一拍心跳的代价，远小于拿空对象覆写一份身份锚。
+        log('心跳：身体信号主路径与备份全部读不出 → 本拍跳过写入（不拿空对象覆写）')
+        return
+      }
+      const body = { ...pre.signal }
       applyRhythm(body, Date.now()) // 心跳触发前先应用今日节律：身体按时段给此刻的心情底色
       const interval = beatIntervalSeconds(body)
       // —— 疲劳 A 驱动（实测）：tokenMeter 测上下文占用。measure 是 O(surface)，按需调用（心跳真正触发 / 10 分钟日志），不是每 tick。——
@@ -496,20 +570,18 @@ export function apply(ctx) {
       if (body.mood === '休眠') {
         if (!body.sleep_at) {
           body.sleep_at = new Date().toISOString()
-          try {
-            await writeFile(pre.path ?? join(cwd, SIGNAL_FILE), JSON.stringify(body, null, 2), 'utf8')
+          if (await writeSignal(cwd, pre.path, body, '睡下记账')) {
             log('睡下记账 → sleep_at=' + body.sleep_at + '，心跳关闭')
-          } catch {}
+          }
         }
         const sleepAtMs = Date.parse(body.sleep_at)
         const wakeAt = nextWakeAt(sleepAtMs, body.sleep_hours)
         if (Date.now() >= wakeAt) {
           if (body.to !== 'wake') {
             const nb = { ...body, to: 'wake' }
-            try {
-              await writeFile(pre.path ?? join(cwd, SIGNAL_FILE), JSON.stringify(nb, null, 2), 'utf8')
+            if (await writeSignal(cwd, pre.path, nb, '醒来闹钟')) {
               log('醒来闹钟到点 → 写入 to:wake（翻页交由切换通路执行）')
-            } catch {}
+            }
           }
           return void handleIdle(agent) // 信号已在文件里，复用切换通路完成翻页
         }
@@ -530,14 +602,14 @@ export function apply(ctx) {
         const imprint = collapseCheck(contextPct, Date.now())
         if (imprint !== null) {
           const { signal: sigC, path: pC } = await readSignal(cwd)
-          const nb = sigC ?? {}
+          // 读不到时回退到本拍早先读到的 body（含身份/note），绝不退成空对象（雯 2026-10-25）
+          const nb = sigC === null ? { ...body } : { ...sigC }
           nb.昏睡 = imprint
           if (body.note) nb.昏睡前_note = body.note // 钉子一（雯）："我正在干的这件事"要有一个入口
           nb.to = 'wake'
-          try {
-            await writeFile(pC ?? join(cwd, SIGNAL_FILE), JSON.stringify(nb, null, 2), 'utf8')
+          if (await writeSignal(cwd, pC ?? pre.path, nb, '保护性昏睡')) {
             log('保护性昏睡触发（R1 保险丝）→ 印记已写 + to:wake')
-          } catch {}
+          }
           return void handleIdle(agent) // 复用切换通路完成翻页
         }
       }
@@ -582,7 +654,9 @@ export function apply(ctx) {
       const nextBeats = Math.min(beats + 1, COOLDOWN_TABLE.length - 1)
       try {
         const { signal: sigNow, path: pNow } = await readSignal(cwd)
-        const nb = sigNow ?? {}
+        // 读不到时回退到本拍早先的 body（含身份/note），绝不退成空对象——
+        // 10-22 21:02 那次"身份字段消失"的根就在这一行（雯 2026-10-25）
+        const nb = sigNow === null ? { ...body } : { ...sigNow }
         nb.cool_beats = nextBeats
         if (nb.mood === '休眠') nb.mood = cooldownMoodWord(1) // 自然醒：浮上冷却链
         else if (nb.mood === '炽热' && nextBeats >= COOLDOWN_TABLE.length - 1) nb.mood = cooldownMoodWord(1)
@@ -594,7 +668,7 @@ export function apply(ctx) {
         if (desireDue) nb.欲望_注 = { d: desireDay, l: desire.rank } // 当天已浮现（同档不重复；升档可再注）
         delete nb.昏睡 // 送达即清（雯 10-20）：文件侧同步清，防止复读
         delete nb.身体记事
-        await writeFile(pNow ?? join(cwd, SIGNAL_FILE), JSON.stringify(nb, null, 2), 'utf8')
+        await writeSignal(cwd, pNow ?? pre.path, nb, '心跳')
         log('心跳触发 → mood=' + nb.mood + '，下次间隔', Math.round(beatIntervalSeconds(nb) / 60), 'min')
       } catch {}
     }
