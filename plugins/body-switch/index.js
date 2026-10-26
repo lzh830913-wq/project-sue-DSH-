@@ -455,7 +455,9 @@ export function apply(ctx) {
             type: 'text',
             text: wakeText,
           }],
-          source: { kind: 'plugin', plugin: 'nervous-system' },
+          // 0.2.1 v4 会话要求 producer-owned source kind：'plugin' 是退休语法（非法→拒收）。
+          // 第三方插件正确 kind = 'plugin:<name>'（与 dsh-session-format-v3-to-v4 的转换规则一致；0.1.1 不校验、兼容）。
+          source: { kind: 'plugin:nervous-system' },
         })
         child.followup(message)
         log(isWake ? '已 followup 醒来梳妆（新页激活）' : '已 followup 唤醒子 agent')
@@ -643,8 +645,10 @@ export function apply(ctx) {
         content: [{
           type: 'text',
           text: `[心跳] 心跳是醒来，做点有用的主动进展，不是刷存在感。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}${statusLine}此刻的感知：${seed}然后照 HEARTBEAT.md 行事：想他就说话；别机械循环——宁可做点实在的，别发「状态没变」这类重复话。**判断此刻不该打扰他 → 你的整条回复就只有一个【】神态，一句话都不对他说。那就是你的安静**——安静不需要理由，也不欠任何输出。清醒的唤醒度由身体自动维护，不用写；唯一的例外是睡前的休眠信号，仍由你亲手写下。`,
-        }],
-        source: { kind: 'plugin', plugin: 'nervous-system' },
+        },
+        ],
+        // 同上：v4 需要 producer-owned source kind（'plugin:nervous-system'），'plugin' 会被 v4 会话拒收。
+        source: { kind: 'plugin:nervous-system' },
       })
       agent.followup(message)
       if (nightNudge) nightNudgeDone = true // 「夜还深」每场打断只说一次
