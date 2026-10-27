@@ -13,6 +13,7 @@
 
 | 日期 | 文件 | 主题 | 类型 | 一句话 | 涉及文件 | 状态 |
 |---|---|---|---|---|---|---|
+| 2026-10-27 | `2026-10-27-身体感知抓取-设计稿核实.md` | 身体感知抓取 v0.1 · 设计稿核实 | 核实（准备） | 雯主导设计稿（老刘授权"这是你的身体"）与源码**零偏差**：三方哈希 FDF43CD2 一致、引用段逐字核对（event 拿到没传下去属实）、0.2.1 类型实证 content=ContentBlock[]、注入通道/翻页清零挂点现成、设计哲学零冲突；实现方案备好（复用 pre-step 通道+内存计数器+时间戳衰减）；三待定点（词表重叠原样跑/亲密语境留 v0.2/**词表外部化兼隐私决策**——建议外部 JSON+内置兜底，公开库不含她的词表） | `plugins/body-switch/index.js`（未动）、设计稿在 3081 侧（不进库） | 📐 已核实，明后天开工 |
 | 2026-10-27 | `2026-10-27-疲劳注入重构v0.1与QQ通道对齐.md` | 疲劳注入重构 v0.1 + QQ 通道收编 | 落地 | R1/R2 拆开（maxZone 删除）；注入点×2（agent/pre-step 每轮上下文注入 + 心跳保留）；R1 按轮数 50-60/5轮·60-70/3轮·≥70/轮；R2 边界式 16/21/23/02 点+清醒 8/12/16h+≥23 每5轮；注入_已报翻页/休眠清空；awake 折算进 R2；雯的 syncQqbotSession 反向同步收编；node --check 过、部署 A8F165FC、**待重启验证** | `plugins/body-switch/index.js` | ✅ 已部署待重启（对照设计稿 §1.8 六条验收） |
 | 2026-10-27 | `2026-10-27-preset-mount冲突修复.md` | jingwen-dev 预设选择失败修复 | 事故修复 | 选中自动跳回根因：`tool-cordis` 的进程级 Inspect Provider 注册（`cordisInspect` 单例、id 固定）与默认 cordis 预设互斥 → mount 报 already registered → 会话创建回滚；jingwen-dev 的 tool-cordis 行禁用后 mount 实测成功；诊断法 = discovery 脚本排除 + 运行时 `standingKeyFor` 实测 | `C:\Users\lzh_6\.dsh\.agent-presets\jingwen-dev\agent.cordis.yml`、`preset.yml` | ✅ 已修复（静雯模式无 cordis 自指工具；mount ok） |
 | 2026-10-10 | `2026-10-10-推送skill与README内感知.md` | 推送 skill 化 + README 内感知定调 | 落地（补记 10-26） | push-buffer SKILL 成文（三步流程/隐私审阅两道闸/沙箱升级/审批不轰炸）+ AGENTS 指针 + README 疲劳睡眠段重写为「人工内感知」（tokenMeter 实测/结论归她/42%→5%）；"审阅挡的是文本隐私不是代码好坏" | `skills/push-buffer/`、`AGENTS.md`、`README.md` | ✅ 已落地（补记） |
