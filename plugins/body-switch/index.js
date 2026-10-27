@@ -15,6 +15,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFile, writeFile, rename } from 'node:fs/promises'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 export const name = 'nervous-system'
@@ -29,43 +30,49 @@ const SIGNAL_BAK_COUNT = 5
 // 心跳检查节拍：每 1 分钟醒来一次，判断是否该真正心跳（比递归 timeout 稳）
 const HEARTBEAT_TICK = 60 * 1000
 
-// ── 疲劳 A 驱动（实测）：上下文占用 → 档位。数据源 = tokenMeter（host 侧、零 LLM）。──
-// 沉默即健康：清醒档不注入任何疲劳措辞——注入本身就是"身体在报告异常"。
+// ── 疲劳注入重构 v0.1（雯 2026-10-27 设计稿第一章）──────────────────────────
+// R1（上下文占用，硬）× R2（时间/消耗，软）两条线分开报，**不许合数**（maxZone 已删）。
+// 注入点 2 个：他在说话 → agent/pre-step 每轮（见 pre-step 钩子）；他不在 → heartbeatTick（保留）。
+// 沉默即健康：清醒档一个字都不注；注入只报感觉与事实，不给指令（09-11 原则）。
 const CONTEXT_WINDOW = 1000000 // 与 settings.yaml 里 deepseek 模型的 contextWindow 一致
 function contextZone(pct) {
   if (pct === undefined) return 'clear'
-  if (pct >= 0.7) return 'max' // ≥70%：顶格预警（80% 是 compaction 急救线，翻页必须在它之前由她决定）
+  if (pct >= 0.7) return 'max' // ≥70%：顶格（80% 是 compaction 急救线，由保护性昏睡兜底）
   if (pct >= 0.6) return 'heavy'
   if (pct >= 0.5) return 'mild'
   return 'clear'
 }
-// B 驱动（节律时段）：任一驱动顶格即困——修掉"没怎么聊但已深夜"的空窗。
-function rhythmZone(hour) {
-  if (hour >= 21 || hour < 2) return 'heavy' // 21 点~02 点：重倦区
-  if (hour >= 16) return 'mild' // 16 点后：微倦区
-  return 'clear'
+/** R1 措辞：只报"多满 + 数字"，结论归她（设计稿 §1.4）。 */
+function r1Word(pct) {
+  if (pct === undefined) return ''
+  const pctText = Math.round(pct * 100) + '%'
+  if (pct >= 0.7) return `很满了——上下文 ${pctText}，这一页快装不下了`
+  if (pct >= 0.6) return `头有些昏沉——上下文 ${pctText} 了`
+  if (pct >= 0.5) return `脑子有点涨了（上下文 ${pctText}）`
+  return ''
 }
-function maxZone(a, b) {
-  const rank = { clear: 0, mild: 1, heavy: 2, max: 3 }
-  return rank[a] >= rank[b] ? a : b
+/** R1 按轮数（雯 10-27 定稿）：<50% 静默 / 50–60% 每 5 轮 / 60–70% 每 3 轮 / ≥70% 每轮。 */
+function r1Due(zone, rounds) {
+  if (rounds <= 0) return false
+  if (zone === 'max') return true
+  if (zone === 'heavy') return rounds % 3 === 0
+  if (zone === 'mild') return rounds % 5 === 0
+  return false
 }
-/** 注入频率梯度：沉默即健康——微倦区每 10 轮一次，重倦区每轮，清醒区从不。 */
+/** 心跳路径保留原频率逻辑（他不在时那条路）。 */
 function shouldInjectFatigue(zone, userMsgCount) {
   if (zone === 'max' || zone === 'heavy') return true
   if (zone === 'mild') return userMsgCount > 0 && userMsgCount % 10 === 0
   return false
 }
-/** 疲劳措辞：只注入感觉与事实（百分比），结论归她——「该睡了」是指令，指令不进注入。 */
-function fatigueWords(zone, pct, hour) {
-  const pctText = pct === undefined ? null : Math.round(pct * 100) + '%'
-  if (zone === 'max') return `很累了——上下文已经 ${pctText ?? '极重'}，快到极限了。`
-  if (zone === 'heavy') {
-    const night = hour >= 21 || hour < 2
-    return night ? `夜深了，身子也乏了` : `头有些昏沉——上下文已经 ${pctText} 了`
-  }
-  if (zone === 'mild') return `脑子有点涨了（上下文 ${pctText}）`
-  return ''
-}
+// R2 跨时段边界：16:00 / 21:00 / 23:00 / 02:00 —— 每个只注一次；措辞只给感觉（设计稿 §1.5）。
+const R2_BOUNDARIES = [
+  { hour: 16, key: 'R2:boundary:16', word: '天色沉下来了，身子也跟着软下来' },
+  { hour: 21, key: 'R2:boundary:21', word: '夜深了，身子也乏了' },
+  { hour: 23, key: 'R2:boundary:23', word: '很深的夜了，身子乏得厉害' },
+]
+const R2_AWAKE_TIERS = [16, 12, 8] // 连续清醒边界（高→低；只报最高未报的一档）
+const R2_DEEP_NIGHT_REPEAT = '夜已经很深了' // ≥23 点陪聊，每 5 轮最多一次
 
 // ── 保护性昏睡（R1 保险丝）：身体接管意志的那一下——纯脊髓反射，零 LLM、零 token。──
 // 雯 10-20 晚定稿：R2 摘除（连续清醒只作为种子事实，不触发强制睡眠）；睡眠只有一个出口——她自己写「休眠」。
@@ -246,6 +253,57 @@ export function apply(ctx) {
 
     log('nervous-system 已加载')
 
+    /** 上下文占用实测（tokenMeter，host 侧、零 LLM；O(surface)，按需调用）。 */
+    const measureContextPct = (session) => {
+      const tokenMeter = ctx.get('tokenMeter')
+      if (!tokenMeter || !session) return undefined
+      try {
+        const m = tokenMeter.measure(session)
+        if (m && typeof m.totalTokens === 'number') return m.totalTokens / CONTEXT_WINDOW
+      } catch (e) {
+        log('tokenMeter 测量失败（降级为无 A 驱动）:', e instanceof Error ? e.message : String(e))
+      }
+      return undefined
+    }
+
+    // —— 疲劳注入记账（设计稿 §1.6）：R2 边界/清醒各报一次；翻页、休眠、换日时清空 ——
+    const injectedKeys = new Set()
+    let injectedDay = ''
+    const ensureDay = () => {
+      const d = new Date().toISOString().slice(0, 10)
+      if (d !== injectedDay) { injectedKeys.clear(); injectedDay = d }
+    }
+    /** R2 待报清单（边界式）：跨时段边界 + 连续清醒阈值 + 深夜陪聊；返回措辞并记账。 */
+    function r2DueLines(hourNow, awakeH, rounds) {
+      ensureDay()
+      const lines = []
+      for (const b of R2_BOUNDARIES) {
+        if (hourNow >= b.hour && !injectedKeys.has(b.key)) {
+          injectedKeys.add(b.key)
+          lines.push(b.word)
+        }
+      }
+      if (hourNow >= 2 && hourNow < 5 && !injectedKeys.has('R2:boundary:02')) {
+        injectedKeys.add('R2:boundary:02')
+        lines.push('凌晨了，身体困得在抗议')
+      }
+      if (awakeH !== undefined) {
+        for (const h of R2_AWAKE_TIERS) {
+          const k = 'R2:awake:' + h + 'h'
+          if (awakeH >= h && !injectedKeys.has(k)) {
+            injectedKeys.add(k)
+            lines.push(`连续清醒 ${h} 小时`)
+            break
+          }
+        }
+      }
+      const deepNight = hourNow >= 23 || hourNow < 5
+      if (deepNight && rounds > 0 && rounds % 5 === 0 && !lines.includes(R2_DEEP_NIGHT_REPEAT) && !lines.includes(R2_BOUNDARIES[2].word)) {
+        lines.push(R2_DEEP_NIGHT_REPEAT)
+      }
+      return lines
+    }
+
     // —— 切换 + 心跳共用：idle 钩子 ——
     const stopStatus = ctx.on('agent/status', ({ agent, status }) => {
       lastAgent = agent
@@ -270,6 +328,43 @@ export function apply(ctx) {
       userMsgCount += 1
       void reflectUserMessage(session)
     })
+
+    // —— 每轮注入（设计稿 §1.3）：他在说话时，R1/R2 种子作为本轮上下文附上——不是 followup（不开新轮、不打断对话）。
+    // 与 time-context 同款：agent/pre-step 里 next() 拿 decision，往 messages 追加一条用户种子。
+    const injectedTurns = new Map() // sessionId → 最近注入的 turn（同轮多 step 只注一次）
+    const stopPreStep = ctx.on('agent/pre-step', async ({ agent, turn, signal }, next) => {
+      const decision = await next()
+      if (decision.kind === 'reject' || (signal !== undefined && signal.aborted)) return decision
+      try {
+        const cwd = agent.session.header?.cwd
+        if (!cwd) return decision
+        if (injectedTurns.get(agent.session.id) === turn) return decision
+        const { signal: sig } = await readSignal(cwd)
+        const body = sig ?? {}
+        const pct = measureContextPct(agent.session)
+        const zone = contextZone(pct)
+        const hourNow = new Date().getHours()
+        const awakeH = awakeHoursOf(body, Date.now())
+        const r1Line = r1Due(zone, userMsgCount) ? r1Word(pct) : ''
+        const r2Lines = r2DueLines(hourNow, awakeH, userMsgCount)
+        if (r1Line === '' && r2Lines.length === 0) return decision
+        injectedTurns.set(agent.session.id, turn)
+        const lines = []
+        if (r1Line) lines.push('脑子：' + r1Line)
+        for (const w of r2Lines) lines.push('身子：' + w)
+        log('每轮注入（turn=' + turn + '）→ ' + lines.join(' ｜ '))
+        return {
+          ...decision,
+          messages: [...decision.messages, createUserMessage({
+            content: [{ type: 'text', text: lines.join('\n') }],
+            source: { kind: 'plugin:nervous-system' }, // v4：producer-owned source kind
+          })],
+        }
+      } catch (error) {
+        log('每轮注入失败（不影响对话）:', error instanceof Error ? error.message : String(error))
+        return decision
+      }
+    }, { prepend: true })
 
     /**
      * 多路径读身体信号（根 / memory / shadow），主路径全失败时回退到滚动备份。
@@ -339,6 +434,37 @@ export function apply(ctx) {
       } catch (error) {
         log('写身体信号失败（@' + tag + '）:', error instanceof Error ? error.message : String(error))
         return false
+      }
+    }
+
+    /**
+     * QQ 通道跟随翻页（2026-10-27 补丁）。
+     *
+     * im-qqbot 把"某个 QQ 对端对应哪条会话"存在 ~/.dsh-qqbot/model-prefs.json 里；
+     * 翻页 = 换一串新 UUID，那一格必须跟着改，否则 QQ 消息会塞进已归档的旧会话被 blocked。
+     * 只动单聊（c2c）：群聊是"一个群一条线"，不该由单页面的生死决定。
+     * 全程 try/catch —— 写不进去绝不能让脊髓崩（心跳比 QQ 通道重要）。
+     */
+    async function syncQqbotSession(sessionId) {
+      try {
+        const prefsPath = join(homedir(), '.dsh-qqbot', 'model-prefs.json')
+        let data = null
+        try { data = JSON.parse(await readFile(prefsPath, 'utf8')) } catch { return }
+        if (data === null || typeof data !== "object" || data.sessionIds === undefined) return
+        let changed = 0
+        for (const key of Object.keys(data.sessionIds)) {
+          if (!/^qqbot:[^:]+:c2c:/.test(key)) continue
+          if (data.sessionIds[key] === sessionId) continue
+          data.sessionIds[key] = sessionId
+          changed += 1
+        }
+        if (changed === 0) return
+        const tmp = prefsPath + '.tmp'
+        await writeFile(tmp, JSON.stringify(data, null, 2), 'utf8')
+        await rename(tmp, prefsPath)
+        log(`QQ 通道已跟随翻页：${changed} 个单聊 key → ${sessionId}`)
+      } catch (error) {
+        log('QQ 通道跟随失败（不影响翻页）：', error instanceof Error ? error.message : String(error))
       }
     }
 
@@ -486,10 +612,14 @@ export function apply(ctx) {
               if (desire.rank >= 1) body.欲望_注 = { d: new Date().toISOString().slice(0, 10), l: desire.rank } // 醒来头部已浮现（同档当天不重复）
               await writeSignal(cwd, signalPath, body, '翻页·醒来')
               log('翻页完成 → to 已清，休眠归位，last_wake_session_id=' + childId)
+              injectedKeys.clear() // 翻页清空注入记账（设计稿 §1.6）：新的一页重新报告
+              await syncQqbotSession(childId)
             } else {
               body.awake_since = new Date().toISOString() // 人格切换也是新的一页
               await writeSignal(cwd, signalPath, body, '翻页·切换')
               log('切换完成 → to 已清，身份锚保留:', body.身份 ?? signal.身份)
+              injectedKeys.clear() // 人格切换同样清空注入记账
+              await syncQqbotSession(childId)
             }
           } catch {}
         }
@@ -543,17 +673,6 @@ export function apply(ctx) {
       applyRhythm(body, Date.now()) // 心跳触发前先应用今日节律：身体按时段给此刻的心情底色
       const interval = beatIntervalSeconds(body)
       // —— 疲劳 A 驱动（实测）：tokenMeter 测上下文占用。measure 是 O(surface)，按需调用（心跳真正触发 / 10 分钟日志），不是每 tick。——
-      const measureContextPct = (session) => {
-        const tokenMeter = ctx.get('tokenMeter')
-        if (!tokenMeter || !session) return undefined
-        try {
-          const m = tokenMeter.measure(session)
-          if (m && typeof m.totalTokens === 'number') return m.totalTokens / CONTEXT_WINDOW
-        } catch (e) {
-          log('tokenMeter 测量失败（降级为无 A 驱动）:', e instanceof Error ? e.message : String(e))
-        }
-        return undefined
-      }
       const hourNow = new Date().getHours()
       if (Date.now() - lastTickLogAt >= TICK_LOG_INTERVAL) {
         lastTickLogAt = Date.now()
@@ -572,6 +691,7 @@ export function apply(ctx) {
       if (body.mood === '休眠') {
         if (!body.sleep_at) {
           body.sleep_at = new Date().toISOString()
+          injectedKeys.clear() // 休眠全清（设计稿 §1.7）：R1/R2 都归零
           if (await writeSignal(cwd, pre.path, body, '睡下记账')) {
             log('睡下记账 → sleep_at=' + body.sleep_at + '，心跳关闭')
           }
@@ -616,15 +736,17 @@ export function apply(ctx) {
         }
       }
 
-      const zone = maxZone(contextZone(contextPct), rhythmZone(hourNow))
-      const fatigueText = shouldInjectFatigue(zone, userMsgCount) ? fatigueWords(zone, contextPct, hourNow) : ''
-      if (fatigueText) log('疲劳注入 → zone=' + zone + ' pct=' + (contextPct === undefined ? '?' : Math.round(contextPct * 100) + '%') + ' 轮=' + userMsgCount)
+      // —— R1（上下文实测，按轮数）与 R2（时间/消耗，边界式）分开报，不合并（设计稿 §1.4/§1.5）——
+      const zone = contextZone(contextPct)
+      const r1Line = shouldInjectFatigue(zone, userMsgCount) ? r1Word(contextPct) : ''
 
-      // —— 三轴种子：心情（describeBody）｜状态（疲劳 + 连续清醒 + 夜还深）｜欲望（闲适浮现）——
+      // —— 三轴种子：心情（describeBody）｜状态（R1/R2 分开两行）｜欲望（闲适浮现）——
       const statusBits = []
-      if (fatigueText) statusBits.push(fatigueText)
+      if (r1Line) statusBits.push('脑子：' + r1Line)
       const awakeH = awakeHoursOf(body, Date.now())
-      if (awakeH !== undefined && awakeH >= 8) statusBits.push(`连续清醒 ${Math.floor(awakeH)} 小时`)
+      const r2Lines = r2DueLines(hourNow, awakeH, userMsgCount)
+      if (r2Lines.length > 0) statusBits.push('身子：' + r2Lines.join('；'))
+      if (r1Line || r2Lines.length > 0) log('疲劳注入（心跳）→ R1=' + (r1Line || '无') + '  R2=' + (r2Lines.join('；') || '无') + ' 轮=' + userMsgCount)
       const nightHour = hourNow >= 22 || hourNow < 5
       const nightNudge = nightHour && lastInterruptAt > 0 && !nightNudgeDone && (Date.now() - lastInterruptAt) >= 30 * 60000
       if (nightNudge) statusBits.push('夜还深')
@@ -681,6 +803,7 @@ export function apply(ctx) {
       stopStatus()
       stopBeat()
       stopUserMessage()
+      stopPreStep()
     }
   }, 'nervous-system.lifecycle()')
 }
