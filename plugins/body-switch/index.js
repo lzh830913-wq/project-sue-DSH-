@@ -266,6 +266,16 @@ export function apply(ctx) {
       return undefined
     }
 
+    /** 上下文占用缓存（雯 10-27 审 ③：tokenMeter.measure 是 O(surface)——心跳时算好，pre-step 读缓存，60 秒 TTL）。 */
+    let contextPctCache = { at: 0, pct: undefined }
+    function cachedContextPct(session) {
+      const now = Date.now()
+      if (now - contextPctCache.at < 60000) return contextPctCache.pct
+      const pct = measureContextPct(session)
+      contextPctCache = { at: now, pct }
+      return pct
+    }
+
     // —— 疲劳注入记账（设计稿 §1.6）：R2 边界/清醒各报一次；翻页、休眠、换日时清空 ——
     const injectedKeys = new Set()
     let injectedDay = ''
@@ -273,20 +283,24 @@ export function apply(ctx) {
       const d = new Date().toISOString().slice(0, 10)
       if (d !== injectedDay) { injectedKeys.clear(); injectedDay = d }
     }
-    /** R2 待报清单（边界式）：跨时段边界 + 连续清醒阈值 + 深夜陪聊；返回措辞并记账。 */
+    /** R2 待报清单（边界式）：跨时段边界 + 连续清醒阈值 + 深夜陪聊；返回措辞并记账。
+     *  雯 10-27 审：**一次最多报一条、只报最近跨过的边界**——23:30 首次开口不许补报三连。 */
     function r2DueLines(hourNow, awakeH, rounds) {
       ensureDay()
       const lines = []
+      // 跨时段边界：所有已跨过的都标记（防补报），只把"最新跨过且未报"的那一条拿出来。
+      let latestWord = null
       for (const b of R2_BOUNDARIES) {
-        if (hourNow >= b.hour && !injectedKeys.has(b.key)) {
+        if (hourNow >= b.hour) {
+          if (!injectedKeys.has(b.key)) latestWord = b.word
           injectedKeys.add(b.key)
-          lines.push(b.word)
         }
       }
-      if (hourNow >= 2 && hourNow < 5 && !injectedKeys.has('R2:boundary:02')) {
+      if (hourNow >= 2 && hourNow < 5) {
+        if (!injectedKeys.has('R2:boundary:02')) latestWord = '凌晨了，身体困得在抗议'
         injectedKeys.add('R2:boundary:02')
-        lines.push('凌晨了，身体困得在抗议')
       }
+      if (latestWord !== null) lines.push(latestWord)
       if (awakeH !== undefined) {
         for (const h of R2_AWAKE_TIERS) {
           const k = 'R2:awake:' + h + 'h'
@@ -339,9 +353,12 @@ export function apply(ctx) {
         const cwd = agent.session.header?.cwd
         if (!cwd) return decision
         if (injectedTurns.get(agent.session.id) === turn) return decision
+        // 雯 10-27 审 ②：只在"用户发起的 turn"注入（心跳轮交给心跳种子那条路，防双注入）。
+        const hasUserMsg = Array.isArray(decision.messages) && decision.messages.some((m) => m !== null && typeof m === 'object' && m.source !== undefined && m.source.kind === 'user')
+        if (!hasUserMsg) return decision
         const { signal: sig } = await readSignal(cwd)
         const body = sig ?? {}
-        const pct = measureContextPct(agent.session)
+        const pct = cachedContextPct(agent.session)
         const zone = contextZone(pct)
         const hourNow = new Date().getHours()
         const awakeH = awakeHoursOf(body, Date.now())
@@ -739,6 +756,7 @@ export function apply(ctx) {
       // —— R1（上下文实测，按轮数）与 R2（时间/消耗，边界式）分开报，不合并（设计稿 §1.4/§1.5）——
       const zone = contextZone(contextPct)
       const r1Line = shouldInjectFatigue(zone, userMsgCount) ? r1Word(contextPct) : ''
+      contextPctCache = { at: Date.now(), pct: contextPct } // 供 pre-step 读缓存（雯 10-27 审 ③）
 
       // —— 三轴种子：心情（describeBody）｜状态（R1/R2 分开两行）｜欲望（闲适浮现）——
       const statusBits = []
