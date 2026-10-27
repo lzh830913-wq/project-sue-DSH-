@@ -48,9 +48,11 @@ git -C 'I:\SUE push buffer' push origin main
 
 - 给老刘报：同步区间、审阅结论（扫了什么、有无涂抹）、push 结果、升级审批消耗次数。
 - 推的是代码/配置时，质量审阅报告须在**推送前**拿到他点头（本 SKILL 不替代 `skills/engineering` 纪律）。
+- **对账/判断待推区间一律用 `git -C 'I:\SUE push buffer' ls-remote origin main`（直接问远端）**——池内 `origin/main` 跟踪引用会陈旧，不能当准绳。区间 = 本地 main 与 ls-remote 结果之差；池内 `origin/main` 仅作参考。
 
 ## 教训（2026-10-10 首次成文）
 
 - **"审阅"曾被理解成纯质量关口**——老刘校正：仓库公开，代码随便看；审阅挡的是隐私文本。隐私审查（每次必过）≠ 分级质量审阅（代码/配置另走）。
 - `push origin` 报 `could not read Username` 不是凭证坏了，是**沙箱拦了凭证助手的 sh 进程**（`failed to execute prompt script`）→ 升级即可；不要去改 remote、不要内嵌 token 进 URL。
 - 快照只是流程的速记，完整流程以本 SKILL 为准；快照 git 小节保留指针即可。
+- **池内 `origin/main` 会骗人（2026-10-27 实例）**：指针停在 `a5e7aff`（10-08）、`reflog origin/main` 为空，而 `ls-remote` 显示 GitHub 实际已在 `be21806`——信指针会把待推误判成 36 个并白做隐私审阅。对账一律 ls-remote。
