@@ -12,6 +12,8 @@ openclaw 静雯相关文件/
 settings.yaml
 sessions/
 storages/
+# dsh-rofm 会话记忆（对话摘要落盘，隐私不进库；2026-10-28 装机时加）
+memory/
 *.zstd
 
 # ==== OpenClaw 遗留：身份 / 引导（只作逻辑参考，不进框架库）====
