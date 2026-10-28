@@ -243,6 +243,55 @@ function describeBody(body) {
   return parts.length === 0 ? '' : parts.join('，')
 }
 
+/**
+ * 身体状态的一行（2026-10-28 老刘定 · 「注入的最高原则」）。
+ *
+ * 只取 mood / state / excitement——**不含 昏睡 与 身体记事**：
+ * 那两个是「送达即清」的印记（心跳那条路读后 delete），这里再用一次会重复报。
+ *
+ * 用法：pre-step 每轮调用，**但只在结果变化时才注入**（变了才报，不变成噪音、也不被忽略）。
+ */
+function bodyMoodLine(body) {
+  const parts = []
+  if (body.mood) parts.push(`心情「${body.mood}」`)
+  if (body.state) parts.push(`身体「${body.state}」`)
+  if (body.excitement) parts.push(`兴奋度「${body.excitement}」`)
+  return parts.join('，')
+}
+
+/**
+ * 「当前悬着」的一行摘要（2026-10-28 老刘定）——把 `memory/备忘录.md` 顶部那一节的
+ * **未结事项**压成一句话，每轮随 pre-step 带上。
+ *
+ * 为什么不是"变了才报"：悬案的价值就在"一直在"（同「现在几点」——它每轮都报，不吵）。
+ * 为什么要缓存：备忘录几百行，每轮读一遍没必要；**60 秒 TTL**（跟 contextPctCache 同款理由）。
+ * 为什么只取前 3 条：超过 3 条说明那一节该砍了，提示词不该跟着一起肿。
+ */
+let pendingCache = { at: 0, digest: '' }
+async function readPendingDigest(cwd) {
+  if (Date.now() - pendingCache.at < 60 * 1000) return pendingCache.digest
+  try {
+    const md = await readFile(join(cwd, 'memory', '备忘录.md'), 'utf8')
+    const seg = md.match(/##\s*当前悬着[^\n]*\n([\s\S]*?)(?=\n##\s|$)/)
+    const items = []
+    if (seg) {
+      for (const line of seg[1].split('\n')) {
+        const m = line.match(/^\s*-\s*\[\s\]\s*(.+)$/)
+        if (!m) continue
+        const name = m[1].trim().replace(/[（(].*$/, '').replace(/[。；;].*$/, '').trim()
+        if (name) items.push(name.slice(0, 16))
+      }
+    }
+    pendingCache = {
+      at: Date.now(),
+      digest: items.length === 0 ? '' : `悬着 ${items.length} 件：` + items.slice(0, 3).join(' / ') + (items.length > 3 ? ' 等' : ''),
+    }
+  } catch {
+    pendingCache = { at: Date.now(), digest: '' }
+  }
+  return pendingCache.digest
+}
+
 export function apply(ctx) {
   ctx.effect(() => {
     let switching = false
@@ -346,6 +395,7 @@ export function apply(ctx) {
     // —— 每轮注入（设计稿 §1.3）：他在说话时，R1/R2 种子作为本轮上下文附上——不是 followup（不开新轮、不打断对话）。
     // 与 time-context 同款：agent/pre-step 里 next() 拿 decision，往 messages 追加一条用户种子。
     const injectedTurns = new Map() // sessionId → 最近注入的 turn（同轮多 step 只注一次）
+    const lastBodyNote = new Map() // sessionId → 上次注入过的身体状态（2026-10-28：变了才报）
     const stopPreStep = ctx.on('agent/pre-step', async ({ agent, turn, signal }, next) => {
       const decision = await next()
       if (decision.kind === 'reject' || (signal !== undefined && signal.aborted)) return decision
@@ -364,11 +414,22 @@ export function apply(ctx) {
         const awakeH = awakeHoursOf(body, Date.now())
         const r1Line = r1Due(zone, userMsgCount) ? r1Word(pct) : ''
         const r2Lines = r2DueLines(hourNow, awakeH, userMsgCount)
-        if (r1Line === '' && r2Lines.length === 0) return decision
+        // ★ 2026-10-28（老刘）：身体状态也要每轮感知——以前它只走心跳那条路，
+        //   于是「连续长聊两小时 = 身体零读数」。注入的最高原则：**变了才报**。
+        //   没变就一个字不说（不变成噪音），变了必须报（不被忽略）。
+        const moodNow = bodyMoodLine(body)
+        const moodChanged = moodNow !== '' && moodNow !== (lastBodyNote.get(agent.session.id) ?? '')
+        // ★ 2026-10-28（老刘）：「当前悬着」每轮带一句——它不是"变了才报"那一类，
+        //   它和「现在几点」同类：价值就在"一直在"。放最后一行，紧贴当前这句话（U 形尾部）。
+        const pending = await readPendingDigest(cwd)
+        if (r1Line === '' && r2Lines.length === 0 && !moodChanged && !pending) return decision
         injectedTurns.set(agent.session.id, turn)
+        if (moodChanged) lastBodyNote.set(agent.session.id, moodNow)
         const lines = []
+        if (moodChanged) lines.push('身体：' + moodNow)
         if (r1Line) lines.push('脑子：' + r1Line)
         for (const w of r2Lines) lines.push('身子：' + w)
+        if (pending) lines.push(pending)
         log('每轮注入（turn=' + turn + '）→ ' + lines.join(' ｜ '))
         return {
           ...decision,
@@ -784,7 +845,7 @@ export function apply(ctx) {
       const message = createUserMessage({
         content: [{
           type: 'text',
-          text: `[心跳] 心跳是醒来，做点有用的主动进展，不是刷存在感。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}${statusLine}此刻的感知：${seed}然后照 HEARTBEAT.md 行事：想他就说话；别机械循环——宁可做点实在的，别发「状态没变」这类重复话。**判断此刻不该打扰他 → 你的整条回复就只有一个【】神态，一句话都不对他说。那就是你的安静**——安静不需要理由，也不欠任何输出。清醒的唤醒度由身体自动维护，不用写；唯一的例外是睡前的休眠信号，仍由你亲手写下。`,
+          text: `[心跳] 心跳是我感知时间流动的方式，不是任务。${bodyNote ? '当前身体信号：' + bodyNote + '。' : ''}${statusLine}此刻的感知：${seed}其余照 HEARTBEAT.md——想他就说话，不想就不说；这一拍空着也完整，不欠任何输出。**没有事就是没有事**：安静不需要理由，也不用先证明「不该打扰他」。清醒的唤醒度由身体自动维护，不用我写；唯一的例外是睡前的休眠信号，仍由我亲手写下。`,
         },
         ],
         // 同上：v4 需要 producer-owned source kind（'plugin:nervous-system'），'plugin' 会被 v4 会话拒收。
