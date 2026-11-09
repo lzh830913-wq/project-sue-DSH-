@@ -467,6 +467,27 @@ export function apply(ctx) {
       try {
         const cwd = agent.session.header?.cwd
         if (!cwd) return decision
+        // A2（2026-11-09 · 3081 设计稿）：保护性昏睡从心跳里剥出——每轮开口前检查，与心跳死活无关。
+        // 11-09 上午事故：心跳停 → 原调用点在 elapsed 早退之后，熔断一次没跑 → 上下文撑到 1,051,439 撞 API 墙。
+        // 熔断是消防栓，不该装在电灯开关上。心跳里那份保留（双保险）；测量走 cachedContextPct（60s TTL 缓存）；
+        // 触发过的页由「昏睡」印记自锁（翻页保留印记 → 不重复熔断），与心跳路径语义一致。
+        const fusePct = cachedContextPct(agent.session)
+        if (fusePct !== undefined && fusePct >= COLLAPSE_CONTEXT) {
+          const imprint = collapseCheck(fusePct, Date.now())
+          if (imprint !== null) {
+            const { signal: sigF, path: pathF } = await readSignal(cwd)
+            if (sigF !== null && !sigF.昏睡) {
+              const nb = { ...sigF }
+              nb.昏睡 = imprint
+              if (sigF.note) nb.昏睡前_note = sigF.note
+              nb.to = 'wake'
+              if (await writeSignal(cwd, pathF, nb, '保护性昏睡(pre-step)')) {
+                log('保护性昏睡触发（pre-step 保险丝）→ 印记已写 + to:wake；本轮照常完成，翻页走切换通路')
+                void handleIdle(agent)
+              }
+            }
+          }
+        }
         if (injectedTurns.get(agent.session.id) === turn) return decision
         // 雯 10-27 审 ②：只在"用户发起的 turn"注入（心跳轮交给心跳种子那条路，防双注入）。
         const hasUserMsg = Array.isArray(decision.messages) && decision.messages.some((m) => m !== null && typeof m === 'object' && m.source !== undefined && m.source.kind === 'user')
@@ -752,6 +773,12 @@ export function apply(ctx) {
               body.mood = cooldownMoodWord(1) // 醒来心境：惦记（30 分钟档）
               body.cool_beats = 0
               body.last_wake_session_id = childId
+              // A1（2026-11-09 · 3081 设计稿）：「我在哪」的唯一说法——本页 session id 落进身体信号，
+              // 心跳恢复（A3）／体检／守护神都读这一处。childId 在 0.2.1 即 session id（session-<uuid>）；
+              // roots() 交叉核对兜住格式漂移：两头都匹配不上就按 childId 原样写。
+              const childSession1 = ctx.agents.roots().find(a => a.session?.id === childId || a.id === childId)?.session?.id
+              body.session_id = childSession1 ?? childId
+              body.session_set_at = new Date().toISOString()
               if (desire.rank >= 1) body.欲望_注 = { d: new Date().toISOString().slice(0, 10), l: desire.rank } // 醒来头部已浮现（同档当天不重复）
               await writeSignal(cwd, signalPath, body, '翻页·醒来')
               log('翻页完成 → to 已清，休眠归位，last_wake_session_id=' + childId)
@@ -759,6 +786,10 @@ export function apply(ctx) {
               await syncQqbotSession(childId)
             } else {
               body.awake_since = new Date().toISOString() // 人格切换也是新的一页
+              // A1（2026-11-09 · 3081 设计稿）：同上——切换页也写 session_id，全系统只认这一处。
+              const childSession2 = ctx.agents.roots().find(a => a.session?.id === childId || a.id === childId)?.session?.id
+              body.session_id = childSession2 ?? childId
+              body.session_set_at = new Date().toISOString()
               await writeSignal(cwd, signalPath, body, '翻页·切换')
               log('切换完成 → to 已清，身份锚保留:', body.身份 ?? signal.身份)
               injectedKeys.clear() // 人格切换同样清空注入记账
@@ -778,9 +809,14 @@ export function apply(ctx) {
           if (workspaceRegistry !== undefined) {
             const ws = await workspaceRegistry.resolveByPath('I:\\SUE test')
             if (ws !== undefined && ws.sessionIds.length > 0) {
-              // 取最后一个 session（最近活跃的）
-              const lastSessionId = ws.sessionIds[ws.sessionIds.length - 1]
-              const session = ctx.sessions.get(lastSessionId)
+              // A3（2026-11-09 · 3081 设计稿）：sessionIds 实测**最新在前**（storages/workspace.json 佐证：
+              // [0]=当日活跃页，[length-1]=最老归档）——旧代码取 [length-1] 抓的是最旧一条，agent 早不在
+              // → 永不挂钩 → 心跳死（11-09 上午事故）。优先读 A1 写的 session_id；读不到或已失效 → 兜底取 [0]。
+              let wanted = null
+              try { const rec = await readSignal('I:\\SUE test'); if (rec.signal !== null && typeof rec.signal.session_id === 'string') wanted = rec.signal.session_id } catch {}
+              let lastSessionId = wanted ?? ws.sessionIds[0]
+              let session = ctx.sessions.get(lastSessionId)
+              if (session === undefined && wanted !== null) { lastSessionId = ws.sessionIds[0]; session = ctx.sessions.get(lastSessionId) }
               if (session !== undefined) {
                 const roots = ctx.agents.roots()
                 const matched = roots.find(a => a.session && a.session.id === lastSessionId)
@@ -841,6 +877,16 @@ export function apply(ctx) {
         log('心跳 tick: switching=' + switching + ' idle=' + lastAgentIdle + ' hasAgent=' + (lastAgent !== null) + ' mood=' + (body.mood ?? '未写') + ' 扑空' + (typeof body.cool_beats === 'number' ? body.cool_beats : 2) + '次 心跳间隔' + Math.round(interval / 60) + 'min' + (pct !== undefined ? ' 上下文' + Math.round(pct * 100) + '%' : '') + ' 轮=' + userMsgCount)
       }
       if (switching) return
+      // A3（2026-11-09 · 3081 设计稿）：lastAgent 可能是已死会话的残留指针（11-09 事故：指针挂在死会话上，
+      // 后台空转两小时半无人知）。每拍验活：不在 roots() 里 → 就地清零，下一拍由上方恢复逻辑重新挂钩。
+      if (lastAgent !== null) {
+        const stillThere = ctx.agents.roots().some(a => a.session && a.session.id === lastAgent.session?.id)
+        if (!stillThere) {
+          log('lastAgent 验活失败 → 清零重找（原 session 已不在）')
+          lastAgent = null
+          lastAgentIdle = false
+        }
+      }
       if (lastAgent === null || !lastAgentIdle) return
       const agent = lastAgent
       const cwd = agent.session.header.cwd
