@@ -233,7 +233,6 @@ presets/                    ← companion preset template
 skills/                     ← disciplines and conduct rules (design philosophy, switching, diary, deployment…)
 开发日志/ (dev-log/)         ← engineering records: how, why, and how verified (daily)
 项目定位.md / 神经系统设计.md  ← design documents (Chinese)
-soul/MEMORY.md              ← milestone skeleton (sanitized)
 ```
 
 **Not in it** (her person):
