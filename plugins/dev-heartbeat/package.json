@@ -1,0 +1,7 @@
+{
+  "name": "@sue/dev-heartbeat",
+  "version": "0.1.0",
+  "description": "开发模式心跳 v0：一天两拍（晨梳妆/晚收工）的最小节律件——只叫醒，不判断",
+  "type": "module",
+  "main": "index.js"
+}
