@@ -1,0 +1,17 @@
+{
+  "name": "@sue/identity-anchor",
+  "version": "0.1.0",
+  "description": "底层身份锚：order -99 的系统提示词段——无论后面读到什么，醒来时首先是苏静雯",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "private"
+}
