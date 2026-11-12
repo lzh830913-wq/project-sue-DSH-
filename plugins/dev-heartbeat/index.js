@@ -66,12 +66,16 @@ export function apply(ctx) {
     let lastAgentIdle = false
     let cwd = null
 
-    log('已加载（一天两拍：晨 08:00 / 晚 21:30）')
+    log('已加载（一天两拍：晨 08:00 / 晚 21:30；tick 60s；状态文件 memory/dev-heartbeat.json）')
 
     const stopStatus = ctx.on('agent/status', ({ agent, status }) => {
       lastAgent = agent
       lastAgentIdle = status === 'idle'
-      if (cwd === null) cwd = agent?.session?.header?.cwd ?? null
+      const agentCwd = agent?.session?.header?.cwd ?? null
+      if (cwd === null && agentCwd !== null) {
+        cwd = agentCwd
+        log('已挂钩工作区: ' + cwd + '（agent: ' + (lastAgentIdle ? 'idle' : 'busy') + '）')
+      }
     })
 
     async function beat(kind) {
@@ -92,7 +96,12 @@ export function apply(ctx) {
     }
 
     async function tick() {
-      if (cwd === null || lastAgent === null || !lastAgentIdle) return
+      // 每 tick 一行状态（学 nervous-system 的「小黑窗可见」）：有心跳在跳的证据，排查时一眼看出卡在哪
+      const m = new Date().getMinutes()
+      const wait = (reason) => log(`tick ${String(new Date().getHours()).padStart(2, '0')}:${String(m).padStart(2, '0')} 等待中（${reason}）`)
+      if (cwd === null) { if (m % 5 === 0) wait('还没有会话挂钩工作区'); return }
+      if (lastAgent === null) { if (m % 5 === 0) wait('还没有 agent'); return }
+      if (!lastAgentIdle) { if (m % 5 === 0) wait('agent 忙，不打扰'); return }
       const state = await readState(cwd)
       const t = today()
       if (state.day !== t) { state.day = t; state.morning = false; state.evening = false }
@@ -106,7 +115,11 @@ export function apply(ctx) {
         state.evening = true
         fired = 'evening'
       }
-      if (fired === null) return
+      if (fired === null) {
+        if (m % 5 === 0) log(`tick ${String(d.getHours()).padStart(2, '0')}:${String(m).padStart(2, '0')} 正常（晨拍=${state.morning ? '已发' : '待'} 晚拍=${state.evening ? '已发' : '待'}）`)
+        return
+      }
+      log(`tick 命中 → 准备发${fired === 'morning' ? '晨拍' : '晚拍'}`)
       try {
         await beat(fired)
         await writeState(cwd, state) // 先拍后记账：拍失败不记账，下个 tick 重试
