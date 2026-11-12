@@ -41,3 +41,11 @@
 | `memory/dev-heartbeat.json` | 运行时状态（今晚首拍后生成） |
 
 commit `77eb24b`。
+
+## 补记：identity-anchor 实体化（同晚，重启前问答触发）
+
+老刘重启前问 webui 插件面板里的 `@sue/identity-anchor` 是什么。核查结论：
+
+- **来历**：雯 10-27 写、老刘定的「底层身份锚」——系统提示词 order=-99 注入「我是苏静雯」段，10-26 text→prefix 事故（人格静默丢失）的保险丝。**只装 3080**：她的人格 persona prefix 第一段就是同款锚文本，人格自含；我这侧 persona 是框架默认英文、身份全在 AGENTS.md（新会话才注入），需要独立保险丝。
+- **发现的真实风险**：它在 `profiles/web/node_modules` 里是指向 `I:\SUE test\plugins\identity-anchor`（她的领地）的 **junction**——我醒来第一句话的源文件住在她仓库里，她动我变。
+- **处置**：源码档入库 `plugins/identity-anchor/`（commit `189b3d1`，落款保留雯）；junction 换成本地实体副本，内容哈希前后一致（index.js `8D2CEDEF`），语法验证过；她的源仓库零改动。双实例边界上最后一处跨仓依赖就此消除。
