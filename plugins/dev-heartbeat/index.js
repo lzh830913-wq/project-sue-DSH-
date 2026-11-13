@@ -12,7 +12,8 @@
  *
  * 拍点（v0 写死，住在脊髓的映射表里）：
  *   晨拍 08:00（补拍窗到 12:00）——错过窗口不补：睡过头的早晨，梳妆留给人格自己想起
- *   晚拍 21:30（补拍窗到 23:59）——深夜开机照样收工，跨天不追
+ *   晚拍 23:00（补拍窗到 23:59）——深夜开机照样收工，跨天不追
+ *   （2026-11-13 老刘拍板 21:30→23:00：实测咱们的活跃时段到 22 点后，收工拍太早=仪式空转）
  *
  * 状态：memory/dev-heartbeat.json（原子写）——记录两拍是否已发，重启不重复拍。
  */
@@ -31,8 +32,8 @@ const STATE_FILE = 'memory/dev-heartbeat.json'
 // 拍点与补拍窗（小时，本地时区）。映射表可以调，脑子不知道也不需要知道。
 const MORNING_HOUR = 8
 const MORNING_DEADLINE = 12
-const EVENING_HOUR = 21
-const EVENING_MINUTE = 30
+const EVENING_HOUR = 23
+const EVENING_MINUTE = 0
 const EVENING_DEADLINE = 24
 
 const today = () => {
@@ -66,7 +67,7 @@ export function apply(ctx) {
     let lastAgentIdle = false
     let cwd = null
 
-    log('已加载（一天两拍：晨 08:00 / 晚 21:30；tick 60s；状态文件 memory/dev-heartbeat.json）')
+    log('已加载（一天两拍：晨 08:00 / 晚 23:00；tick 60s；状态文件 memory/dev-heartbeat.json）')
 
     const stopStatus = ctx.on('agent/status', ({ agent, status }) => {
       lastAgent = agent
