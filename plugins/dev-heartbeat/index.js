@@ -61,6 +61,52 @@ async function writeState(cwd, obj) {
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 
+/**
+ * 天气感知（2026-11-14 老刘提议「晨拍感知日期和天气」，当晚趁热打铁）。
+ *
+ * 选型实录（实测证据，不是查的）：
+ *   - ipapi.co → 返回 HTML，不可用；ip-api.com/http 通（定位=上海），但不再需要（wttr 自带 IP 定位）。
+ *   - open-meteo → 两次连接超时（UND_ERR_CONNECT_TIMEOUT），弃用。
+ *   - wttr.in `?format=%C|%t` → 通，单行轻响应，自动按 IP 定位。英文描述在此映射成中文；
+ *     lang=zh 参数在该端点实测无效，所以映射表住这里（脊髓），未命中回退英文原文——不瞎猜。
+ *
+ * 设计约束：天气是「完全指向自己」的无用之物（11-14 时间感知之问的延续）——
+ *   失败时晨拍照发、不提天气（沉默即健康）；只进晨拍，不进晚拍、不进任何任务判断。
+ */
+const WEATHER_ZH = new Map(Object.entries({
+  'sunny': '晴', 'clear': '晴',
+  'partly cloudy': '局部多云', 'partly sunny': '局部多云',
+  'cloudy': '多云', 'overcast': '阴',
+  'mist': '薄雾', 'fog': '雾', 'freezing fog': '冻雾', 'haze': '霾',
+  'light drizzle': '毛毛雨', 'drizzle': '毛毛雨', 'patchy light drizzle': '零星毛毛雨',
+  'light rain': '小雨', 'moderate rain': '中雨', 'heavy rain': '大雨', 'rain': '雨',
+  'patchy rain possible': '可能有零星小雨', 'light shower rain': '小阵雨', 'shower rain': '阵雨', 'heavy shower rain': '强阵雨',
+  'light snow': '小雪', 'moderate snow': '中雪', 'heavy snow': '大雪', 'snow': '雪',
+  'light snow showers': '小阵雪', 'blizzard': '暴风雪',
+  'thunderstorm': '雷雨', 'light rain with thunder': '雷阵雨', 'thundery outbreak possible': '可能有雷雨',
+}))
+
+/** 取当前天气（wttr.in 单行格式）。任何失败返回 null——晨拍绝不被天气阻塞。 */
+async function fetchWeather() {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 8000)
+  try {
+    const res = await fetch('https://wttr.in/?format=%C|%t', { signal: ctrl.signal })
+    const line = (await res.text()).trim() // 形如 "Light drizzle|+17°C"
+    const [descRaw, tempRaw] = line.split('|')
+    if (!descRaw || !tempRaw) throw new Error('响应不合式: ' + line.slice(0, 40))
+    const desc = WEATHER_ZH.get(descRaw.trim().toLowerCase()) ?? descRaw.trim()
+    const temp = tempRaw.trim().replace('+', '').replace(/\.0$/, '')
+    log('天气已取: ' + desc + ' ' + temp)
+    return `${desc} ${temp}`
+  } catch (error) {
+    log('天气未取到（晨拍照发，不提天气）: ' + (error instanceof Error ? error.message : String(error)))
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export function apply(ctx) {
   ctx.effect(() => {
     let lastAgent = null
@@ -83,9 +129,12 @@ export function apply(ctx) {
       const d = new Date()
       const clock = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
       const day = `${d.getMonth() + 1} 月 ${d.getDate()} 日（周${WEEKDAYS[d.getDay()]}）`
+      // 天气只在晨拍取一次（一天最多一呼，失败即沉默）。城市不入注入——wttr 自动定位，城市名只在本地日志。
+      const weather = kind === 'morning' ? await fetchWeather() : null
+      const weatherPart = weather ? `，${weather}` : ''
       // 拍文本 = 事实 + 指向。措辞的最终审计人是住户本人（设计哲学审计习惯条款）。
       const text = kind === 'morning'
-        ? `[晨拍] 现在是 ${day} ${clock}。醒来梳妆的时间——按 AGENTS「醒来梳妆」的清单走一遍：快照、昨日日记、正在追的念头。判据不变：说得出今天哪一句用得上。`
+        ? `[晨拍] 现在是 ${day}${weatherPart} ${clock}。醒来梳妆的时间——按 AGENTS「醒来梳妆」的清单走一遍：快照、昨日日记、正在追的念头。判据不变：说得出今天哪一句用得上。`
         : `[晚拍] 现在 ${day} ${clock}。收工时间——回顾今天：有新内容就写日记、更新快照；没有就安静收工。节律不是债务，安静不需要理由。`
       const message = createUserMessage({
         content: [{ type: 'text', text }],
