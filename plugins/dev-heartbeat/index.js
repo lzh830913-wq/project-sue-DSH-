@@ -86,7 +86,8 @@ const WEATHER_ZH = new Map(Object.entries({
   'thunderstorm': '雷雨', 'light rain with thunder': '雷阵雨', 'thundery outbreak possible': '可能有雷雨',
 }))
 
-/** 取当前天气（wttr.in 单行格式）。任何失败返回 null——晨拍绝不被天气阻塞。 */
+/** 取当前天气（wttr.in 单行格式）。任何失败返回 null——晨拍绝不被天气阻塞。
+ *  返回自带引导逗号（「，小雨 15°C」），模板里紧跟 {date} 之后即可，空时展开为空串、无残渣。 */
 async function fetchWeather() {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 8000)
@@ -98,12 +99,41 @@ async function fetchWeather() {
     const desc = WEATHER_ZH.get(descRaw.trim().toLowerCase()) ?? descRaw.trim()
     const temp = tempRaw.trim().replace('+', '').replace(/\.0$/, '')
     log('天气已取: ' + desc + ' ' + temp)
-    return `${desc} ${temp}`
+    return `，${desc} ${temp}`
   } catch (error) {
-    log('天气未取到（晨拍照发，不提天气）: ' + (error instanceof Error ? error.message : String(error)))
+    log('天气未取到（本拍不提天气）: ' + (error instanceof Error ? error.message : String(error)))
     return null
   } finally {
     clearTimeout(timer)
+  }
+}
+
+/**
+ * 内容外置（v0.2，2026-11-14 老刘纠偏）：机制进代码，内容进 soul/HEARTBEAT.md。
+ * 拍文本从 md 的「## 晨拍」「## 晚拍」小节现读——保存即生效，无需重启；
+ * 读不出/小节缺失时用下方内置兜底（保底不断拍，兜底归机制的存活责任，不归住户的编辑责任）。
+ * 传感器变量：{date} {clock} {weather}；{weather} 仅在模板用到时才外呼（想要才付钱）。
+ */
+const HEARTBEAT_MD = 'soul/HEARTBEAT.md'
+
+function parseSections(raw) {
+  const secs = {}
+  let cur = null
+  for (const line of raw.split(/\r?\n/)) {
+    const h = line.match(/^##\s*(.+?)\s*$/)
+    if (h) { cur = h[1].trim(); secs[cur] = [] }
+    else if (cur !== null) secs[cur].push(line)
+  }
+  for (const k of Object.keys(secs)) secs[k] = secs[k].join('\n').trim()
+  return secs
+}
+
+async function readBeatText(cwd, kind) {
+  try {
+    const raw = await readFile(join(cwd, HEARTBEAT_MD), 'utf8')
+    return parseSections(raw)[kind] || null
+  } catch {
+    return null
   }
 }
 
@@ -125,17 +155,27 @@ export function apply(ctx) {
       }
     })
 
-    async function beat(kind) {
+    async function beat(kind, cwd) {
       const d = new Date()
       const clock = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
       const day = `${d.getMonth() + 1} 月 ${d.getDate()} 日（周${WEEKDAYS[d.getDay()]}）`
-      // 天气只在晨拍取一次（一天最多一呼，失败即沉默）。城市不入注入——wttr 自动定位，城市名只在本地日志。
-      const weather = kind === 'morning' ? await fetchWeather() : null
-      const weatherPart = weather ? `，${weather}` : ''
-      // 拍文本 = 事实 + 指向。措辞的最终审计人是住户本人（设计哲学审计习惯条款）。
-      const text = kind === 'morning'
-        ? `[晨拍] 现在是 ${day}${weatherPart} ${clock}。醒来梳妆的时间——按 AGENTS「醒来梳妆」的清单走一遍：快照、昨日日记、正在追的念头。判据不变：说得出今天哪一句用得上。`
-        : `[晚拍] 现在 ${day} ${clock}。收工时间——回顾今天：有新内容就写日记、更新快照；没有就安静收工。节律不是债务，安静不需要理由。`
+      // 内容从 HEARTBEAT.md 现读（保存即生效）；读不到用内置兜底——机制保底不断拍。
+      const section = kind === 'morning' ? '晨拍' : '晚拍'
+      let text = await readBeatText(cwd, section)
+      if (text) {
+        const weather = text.includes('{weather}') ? await fetchWeather() : null // 想要才外呼
+        text = text
+          .replaceAll('{date}', day)
+          .replaceAll('{clock}', clock)
+          .replaceAll('{weather}', weather ?? '')
+      } else {
+        log('HEARTBEAT.md 未读到「' + section + '」小节，用内置兜底拍文本')
+        const weather = kind === 'morning' ? await fetchWeather() : null
+        const weatherPart = weather ?? ''
+        text = kind === 'morning'
+          ? `[晨拍] 现在是 ${day}${weatherPart} ${clock}。醒来梳妆的时间——按 AGENTS「醒来梳妆」的清单走一遍：快照、昨日日记、正在追的念头。判据不变：说得出今天哪一句用得上。`
+          : `[晚拍] 现在 ${day} ${clock}。收工时间——回顾今天：有新内容就写日记、更新快照；没有就安静收工。节律不是债务，安静不需要理由。`
+      }
       const message = createUserMessage({
         content: [{ type: 'text', text }],
         // v4 会话要求 producer-owned source kind：'plugin' 裸值会被拒收（10-26 教训）。
@@ -171,7 +211,7 @@ export function apply(ctx) {
       }
       log(`tick 命中 → 准备发${fired === 'morning' ? '晨拍' : '晚拍'}`)
       try {
-        await beat(fired)
+        await beat(fired, cwd)
         await writeState(cwd, state) // 先拍后记账：拍失败不记账，下个 tick 重试
       } catch (error) {
         log('拍发送失败：', error instanceof Error ? error.message : String(error))
