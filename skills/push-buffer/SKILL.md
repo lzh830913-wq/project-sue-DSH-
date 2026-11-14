@@ -11,6 +11,7 @@ description: 推送缓冲池流程——本地→池→GitHub 三方同步 + 推
 
 1. **推送只走缓冲池** `I:\SUE push buffer`（裸镜像）。本地 remote 凭证是坏的，禁止直推；`git push 本地路径` 会起 sh 失败——**同步只能"池侧 fetch"**（方向：池拉本地，不是本地推池）。
 2. **token 在池内 `gh-token`**，由池内 `gh-credential-helper.sh` 消费——**永远不读取、不打印、不复制 token 内容**，凭证不得出现在任何命令或输出里。
+   - **2026-11-13 实例（自首沉淀）**：`git remote -v` 查指向时，把本地 remote URL 里**历史内嵌的 token** 打进了会话输出——违的就是本条。规矩补上：**任何会展示 URL/配置的命令（`remote -v`、`config --get`、`remote show`）执行前，先想「这里面住着凭证吗」**；要查指向，用 `git remote get-url origin` 配合输出时剥离（`-replace '://[^@]+@','://'`）。本地 remote 已剥凭证（11-13 止血），但这条纪律针对的是未来任何一台机器上的任何仓库。
 3. 代理已写在池内 git config（`http(s).proxy = socks5h://127.0.0.1:8888`），不用另配。
 4. **拿不准算不算隐私 → 先问老刘**（AGENTS.md 铁律）。
 
