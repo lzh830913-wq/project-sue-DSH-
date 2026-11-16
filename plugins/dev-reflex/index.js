@@ -66,8 +66,9 @@ export function apply(ctx) {
     let wasBusy = false
     let cwd = null
     let pendingSince = null // 待发时间戳；null=无待发
+    let suppressArm = false // v0.1.1：反射发过之后抑制再武装，直到下一个新回合（用户来了才再武装）
 
-    log(`已加载（用户停下后 ${DELAY_MIN} 分钟反射一次；tick ${TICK / 1000}s；夜间 23:30–07:30 静默）`)
+    log(`已加载（用户停下后 ${DELAY_MIN} 分钟反射一次；tick ${TICK / 1000}s；夜间 23:30–07:30 静默；一次空档至多一次）`)
 
     const stopStatus = ctx.on('agent/status', ({ agent, status }) => {
       lastAgent = agent
@@ -80,14 +81,22 @@ export function apply(ctx) {
         }
       }
       if (wasBusy && nowIdle) {
-        // 回合结束 → 武装反射（覆盖旧待发：一次空档至多一次）
-        pendingSince = Date.now()
-        log('回合结束 → 反射已武装（+' + DELAY_MIN + ' 分钟）')
+        if (suppressArm) {
+          log('反射自己的回合结束 → 不再武装（防 20 分钟无限循环，v0.1.1）')
+        } else {
+          // 回合结束 → 武装反射（覆盖旧待发：一次空档至多一次）
+          pendingSince = Date.now()
+          log('回合结束 → 反射已武装（+' + DELAY_MIN + ' 分钟）')
+        }
       } else if (!wasBusy && !nowIdle) {
-        // 新回合开始（用户来了，或其他唤醒插话）→ 撤销待发
+        // 新回合开始（用户来了，或其他唤醒插话）→ 撤销待发、解除抑制
         if (pendingSince !== null) {
           pendingSince = null
           log('新回合开始 → 反射已撤销（在场不需要反射）')
+        }
+        if (suppressArm) {
+          suppressArm = false
+          log('新回合开始 → 抑制解除')
         }
       }
       wasBusy = !nowIdle
@@ -96,6 +105,7 @@ export function apply(ctx) {
 
     async function fire() {
       pendingSince = null
+      suppressArm = true // v0.1.1：本回合结束后不再武装，直到用户回来
       const clock = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`
       let text = await readReflexText(cwd)
       if (text) {
