@@ -208,6 +208,17 @@ export function apply(ctx) {
     }
 
     async function tick() {
+      // v0.3.2（老刘方案）：tick 总闸——窗外清账+返回，一切节律不过夜。
+      // 缓冲 ±30min 覆盖拍点边界；清掉陈年待发，防明早开窗哑雷。
+      const h = new Date().getHours() + new Date().getMinutes() / 60
+      if (h < DEFAULT_WINDOW_START - 0.5 || h >= DEFAULT_WINDOW_END + 0.5) {
+        if (pendingSince !== null || selfWakeSince !== null) {
+          pendingSince = null
+          selfWakeSince = null
+          log('tick 在活动区间外 → 清账休眠（反射/自醒不过夜）')
+        }
+        return
+      }
       const now = Date.now()
       if (!idle) { pendingSince = null; return } // 保险：不空闲绝不清账
       // ① 反射：用户回合结束后的单发履约唤醒（v0.3.1：窗外到点直接取消，不再顺延）
