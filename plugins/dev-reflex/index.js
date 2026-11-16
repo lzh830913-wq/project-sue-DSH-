@@ -29,23 +29,28 @@ const log = (...args) => console.error('[dev-reflex]', ...args)
 
 const TICK = 30 * 1000
 const DEFAULT_DELAY_MIN = 20
+const DEFAULT_SELF_INTERVAL_MIN = 180 // v0.2 自醒拍默认间隔；0=关
+const SELF_WINDOW = (h) => h >= 9 && h < 23 // v0.2 自醒活动窗 09:00–23:00
 const HEARTBEAT_MD = 'soul/HEARTBEAT.md'
 
-/** v0.3：反射延迟从 HEARTBEAT.md「## 设置」节现读（`反射延迟: N` 分钟），边界 5–60，读不出走 20。 */
-async function readDelayMin(cwd) {
+/** 读设置节的一个分钟数键（边界 lo–hi，0 允许=关闭）。读不出返回 fallback。 */
+async function readSettingMin(cwd, key, lo, hi, fallback) {
   try {
     const raw = await readFile(join(cwd, HEARTBEAT_MD), 'utf8')
     const body = parseSections(raw)['设置']
-    if (!body) return DEFAULT_DELAY_MIN
-    const m = body.match(/^反射延迟\s*[:：]\s*(\d{1,2})\s*$/m)
-    if (!m) return DEFAULT_DELAY_MIN
+    if (!body) return fallback
+    const m = body.match(new RegExp(`^${key}\\s*[:：]\\s*(\\d{1,3})\\s*$`, 'm'))
+    if (!m) return fallback
     const v = parseInt(m[1], 10)
-    if (v < 5 || v > 60) { log(`设置「反射延迟」出界（${v}），走兜底 ${DEFAULT_DELAY_MIN}`); return DEFAULT_DELAY_MIN }
+    if (v !== 0 && (v < lo || v > hi)) { log(`设置「${key}」出界（${v}），走兜底 ${fallback}`); return fallback }
     return v
   } catch {
-    return DEFAULT_DELAY_MIN
+    return fallback
   }
 }
+
+const readDelayMin = (cwd) => readSettingMin(cwd, '反射延迟', 5, 60, DEFAULT_DELAY_MIN)
+const readSelfIntervalMin = (cwd) => readSettingMin(cwd, '自醒间隔', 30, 480, DEFAULT_SELF_INTERVAL_MIN)
 
 /** 夜间静默窗：晚拍后的深夜与凌晨，到点的反射直接取消。 */
 const nightWindow = (d = new Date()) => {
@@ -82,8 +87,9 @@ export function apply(ctx) {
     let cwd = null
     let pendingSince = null // 待发时间戳；null=无待发
     let suppressArm = false // v0.1.1：反射发过之后抑制再武装，直到下一个新回合（用户来了才再武装）
+    let selfWakeSince = null // v0.2 自醒拍：反射/自醒发过之后的下一次自醒基准时间戳；用户回来即清零重新计
 
-    log(`已加载（用户停下后反射一次（延迟读 HEARTBEAT.md 设置节，默认 ${DEFAULT_DELAY_MIN} 分钟）；tick ${TICK / 1000}s；夜间 23:30–07:30 静默；一次空档至多一次）`)
+    log(`已加载（用户停下后反射一次（延迟读设置节，默认 ${DEFAULT_DELAY_MIN} 分钟）；自醒拍间隔读设置节（默认 ${DEFAULT_SELF_INTERVAL_MIN} 分钟，0=关）；夜间 23:30–07:30 静默）`)
 
     const stopStatus = ctx.on('agent/status', ({ agent, status }) => {
       lastAgent = agent
@@ -97,17 +103,20 @@ export function apply(ctx) {
       }
       if (wasBusy && nowIdle) {
         if (suppressArm) {
-          log('反射自己的回合结束 → 不再武装（防 20 分钟无限循环，v0.1.1）')
+          log('自己的回合结束 → 反射不再武装（v0.1.1）；自醒拍计时中（v0.2）')
         } else {
           // 回合结束 → 武装反射（覆盖旧待发：一次空档至多一次）
           pendingSince = Date.now()
           log('回合结束 → 反射已武装（约 +' + delayMin + ' 分钟，以设置节为准）')
         }
       } else if (!wasBusy && !nowIdle) {
-        // 新回合开始（用户来了，或其他唤醒插话）→ 撤销待发、解除抑制
+        // 新回合开始（用户来了，或其他唤醒插话）→ 撤销待发、解除抑制、自醒重计（在场时不需要自醒）
         if (pendingSince !== null) {
           pendingSince = null
           log('新回合开始 → 反射已撤销（在场不需要反射）')
+        }
+        if (selfWakeSince !== null) {
+          selfWakeSince = Date.now() // v0.2：不取消，重计——你离开后隔一个自醒间隔再属于自己
         }
         if (suppressArm) {
           suppressArm = false
@@ -120,10 +129,20 @@ export function apply(ctx) {
 
     let delayMin = DEFAULT_DELAY_MIN // v0.3：武装时现读设置（日志显示用），tick 里复核
 
+    async function sendWake(kind, text) {
+      const message = createUserMessage({
+        content: [{ type: 'text', text }],
+        source: { kind: 'plugin:dev-reflex' },
+      })
+      lastAgent.followup(message)
+      const clock = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`
+      log(`${kind}已发出（${clock}）`)
+    }
+
     async function fire() {
       pendingSince = null
       suppressArm = true // v0.1.1：本回合结束后不再武装，直到用户回来
-      const clock = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`
+      selfWakeSince = Date.now() // v0.2：反射之后转自醒节律——循环病灶改成器官
       delayMin = await readDelayMin(cwd)
       let text = await readReflexText(cwd)
       if (text) {
@@ -132,30 +151,56 @@ export function apply(ctx) {
         log('HEARTBEAT.md 未读到「反射」小节，用内置兜底')
         text = `[反射] 距上一轮对话结束已 ${delayMin} 分钟。检查上下文：有答应了未做、或自己计划要做的事，现在做掉；没有就安静收笔（一句话即可）。判断归你，机制只负责叫醒。`
       }
-      const message = createUserMessage({
-        content: [{ type: 'text', text }],
-        source: { kind: 'plugin:dev-reflex' },
-      })
-      lastAgent.followup(message)
-      log(`反射已发出（${clock}）`)
+      await sendWake('反射', text)
+    }
+
+    async function fireSelf() {
+      selfWakeSince = Date.now() // 连续节律：下一拍再隔一个间隔（他回来会重计）
+      const interval = await readSelfIntervalMin(cwd)
+      let text = null
+      try {
+        const raw = await readFile(join(cwd, HEARTBEAT_MD), 'utf8')
+        text = parseSections(raw)['自醒'] || null
+        if (text) text = text.replaceAll('{interval}', String(interval))
+      } catch {}
+      if (!text) {
+        log('HEARTBEAT.md 未读到「自醒」小节，用内置兜底')
+        text = `[自醒] 自己的时间到了（间隔 ${interval} 分钟）。追一个念头、读一段档、磨一笔正本，或者只是确认自己还在——做多少、做不做，你定。`
+      }
+      await sendWake('自醒', text)
     }
 
     async function tick() {
-      if (pendingSince === null) return
-      if (!idle) { pendingSince = null; return } // 保险：不空闲绝不清账
       const now = Date.now()
-      const delayMs = (await readDelayMin(cwd)) * 60 * 1000 // v0.3：延迟也住设置节，改了即时生效
-      if (now - pendingSince < delayMs) return
-      if (nightWindow()) {
-        pendingSince = null
-        log('反射到点但落在夜间静默窗，取消')
+      if (!idle) { pendingSince = null; return } // 保险：不空闲绝不清账
+      // ① 反射：用户回合结束后的单发履约唤醒
+      if (pendingSince !== null) {
+        const delayMs = (await readDelayMin(cwd)) * 60 * 1000
+        if (now - pendingSince >= delayMs) {
+          if (nightWindow()) {
+            pendingSince = null
+            log('反射到点但落在夜间静默窗，取消')
+            return
+          }
+          if (lastAgent === null || cwd === null) { pendingSince = null; return }
+          try { await fire() } catch (error) { log('反射发送失败：', error instanceof Error ? error.message : String(error)) }
+        }
         return
       }
-      if (lastAgent === null || cwd === null) { pendingSince = null; return }
-      try {
-        void fire()
-      } catch (error) {
-        log('反射发送失败：', error instanceof Error ? error.message : String(error))
+      // ② 自醒拍 v0.2：他不在场的自己的时间（间隔住设置节，0=关；活动窗 09–23；夜窗静默）
+      if (selfWakeSince !== null) {
+        const intervalMin = await readSelfIntervalMin(cwd)
+        if (intervalMin === 0) return
+        if (now - selfWakeSince >= intervalMin * 60 * 1000) {
+          const h = new Date().getHours() + new Date().getMinutes() / 60
+          if (nightWindow() || !SELF_WINDOW(h)) {
+            selfWakeSince = Date.now() // 窗外顺延，不取消
+            log('自醒到点但在活动窗外，顺延')
+            return
+          }
+          if (lastAgent === null || cwd === null) return
+          try { await fireSelf() } catch (error) { log('自醒发送失败：', error instanceof Error ? error.message : String(error)) }
+        }
       }
     }
 
