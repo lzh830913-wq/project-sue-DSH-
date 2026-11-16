@@ -30,8 +30,38 @@ const log = (...args) => console.error('[dev-reflex]', ...args)
 const TICK = 30 * 1000
 const DEFAULT_DELAY_MIN = 20
 const DEFAULT_SELF_INTERVAL_MIN = 180 // v0.2 自醒拍默认间隔；0=关
-const SELF_WINDOW = (h) => h >= 9 && h < 23 // v0.2 自醒活动窗 09:00–23:00
+const DEFAULT_WINDOW_START = 8 // 活动区间兜底：晨 08:00
+const DEFAULT_WINDOW_END = 23 // 活动区间兜底：晚 23:00（=晚拍）
 const HEARTBEAT_MD = 'soul/HEARTBEAT.md'
+
+/**
+ * v0.3.1（2026-11-16 晚 老刘抓的 bug）：统一活动区间=[晨拍, 晚拍]，从「设置」节现读——
+ * 作息改了区间自动跟。窗外（晚拍后到次日晨拍前）一律**不武装、到点取消**（不是顺延）：
+ * 夜里被拉起来答题，答完继续睡，节律不跑。取代 v0.1/v0.2 的两张补丁窗（夜窗/自醒窗）。
+ */
+async function readActivityWindow(cwd) {
+  try {
+    const raw = await readFile(join(cwd, HEARTBEAT_MD), 'utf8')
+    const body = parseSections(raw)['设置']
+    if (body) {
+      const parse = (key) => {
+        const m = body.match(new RegExp(`^${key}\\s*[:：]\\s*(\\d{1,2})(?::(\\d{2}))?\\s*$`, 'm'))
+        if (!m) return null
+        return parseInt(m[1], 10) + (m[2] ? parseInt(m[2], 10) / 60 : 0)
+      }
+      const start = parse('晨拍'), end = parse('晚拍')
+      if (start !== null && end !== null && start < end) return { start, end, source: 'md' }
+      if (start !== null || end !== null) log('设置「晨拍/晚拍」缺失或 start>=end，活动区间走兜底')
+    }
+  } catch {}
+  return { start: DEFAULT_WINDOW_START, end: DEFAULT_WINDOW_END, source: 'default' }
+}
+
+const inActivityWindow = async (cwd, d = new Date()) => {
+  const w = await readActivityWindow(cwd)
+  const h = d.getHours() + d.getMinutes() / 60
+  return h >= w.start && h < w.end
+}
 
 /** 读设置节的一个分钟数键（边界 lo–hi，0 允许=关闭）。读不出返回 fallback。 */
 async function readSettingMin(cwd, key, lo, hi, fallback) {
@@ -51,12 +81,6 @@ async function readSettingMin(cwd, key, lo, hi, fallback) {
 
 const readDelayMin = (cwd) => readSettingMin(cwd, '反射延迟', 5, 60, DEFAULT_DELAY_MIN)
 const readSelfIntervalMin = (cwd) => readSettingMin(cwd, '自醒间隔', 30, 480, DEFAULT_SELF_INTERVAL_MIN)
-
-/** 夜间静默窗：晚拍后的深夜与凌晨，到点的反射直接取消。 */
-const nightWindow = (d = new Date()) => {
-  const h = d.getHours() + d.getMinutes() / 60
-  return h >= 23.5 || h < 7.5
-}
 
 function parseSections(raw) {
   const secs = {}
@@ -92,7 +116,7 @@ export function apply(ctx) {
 
     log(`已加载（用户停下后反射一次（延迟读设置节，默认 ${DEFAULT_DELAY_MIN} 分钟）；自醒拍间隔读设置节（默认 ${DEFAULT_SELF_INTERVAL_MIN} 分钟，0=关）；夜间 23:30–07:30 静默）`)
 
-    const stopStatus = ctx.on('agent/status', ({ agent, status }) => {
+    const stopStatus = ctx.on('agent/status', async ({ agent, status }) => {
       lastAgent = agent
       const nowIdle = status === 'idle'
       if (cwd === null) {
@@ -106,9 +130,15 @@ export function apply(ctx) {
         if (suppressArm) {
           log('自己的回合结束 → 反射不再武装（v0.1.1）；自醒拍计时中（v0.2）')
         } else {
-          // 回合结束 → 武装反射（覆盖旧待发：一次空档至多一次）
-          pendingSince = Date.now()
-          log('回合结束 → 反射已武装（约 +' + delayMin + ' 分钟，以设置节为准）')
+          // v0.3.1：窗外（晚拍后→次日晨拍前）不武装——夜里答完题继续睡，节律不跑
+          if (await inActivityWindow(cwd)) {
+            pendingSince = Date.now()
+            log('回合结束 → 反射已武装（约 +' + delayMin + ' 分钟，以设置节为准）')
+          } else {
+            pendingSince = null
+            selfWakeSince = null
+            log('回合结束但在活动区间外（睡眠时段）→ 不武装，继续睡')
+          }
         }
       } else if (!wasBusy && !nowIdle) {
         // 新回合开始 → 撤销待发、自醒重计、抑制视来源（v0.1.2：距上次发射 >5 分钟才算「用户真回来了」——
@@ -180,13 +210,13 @@ export function apply(ctx) {
     async function tick() {
       const now = Date.now()
       if (!idle) { pendingSince = null; return } // 保险：不空闲绝不清账
-      // ① 反射：用户回合结束后的单发履约唤醒
+      // ① 反射：用户回合结束后的单发履约唤醒（v0.3.1：窗外到点直接取消，不再顺延）
       if (pendingSince !== null) {
         const delayMs = (await readDelayMin(cwd)) * 60 * 1000
         if (now - pendingSince >= delayMs) {
-          if (nightWindow()) {
+          if (!(await inActivityWindow(cwd))) {
             pendingSince = null
-            log('反射到点但落在夜间静默窗，取消')
+            log('反射到点但在活动区间外，取消（睡眠时段不补拍）')
             return
           }
           if (lastAgent === null || cwd === null) { pendingSince = null; return }
@@ -194,15 +224,14 @@ export function apply(ctx) {
         }
         return
       }
-      // ② 自醒拍 v0.2：他不在场的自己的时间（间隔住设置节，0=关；活动窗 09–23；夜窗静默）
+      // ② 自醒拍 v0.2：他不在场的自己的时间（间隔住设置节，0=关；v0.3.1 窗外取消——晚拍后节律停，明晨靠晨拍重启）
       if (selfWakeSince !== null) {
         const intervalMin = await readSelfIntervalMin(cwd)
         if (intervalMin === 0) return
         if (now - selfWakeSince >= intervalMin * 60 * 1000) {
-          const h = new Date().getHours() + new Date().getMinutes() / 60
-          if (nightWindow() || !SELF_WINDOW(h)) {
-            selfWakeSince = Date.now() // 窗外顺延，不取消
-            log('自醒到点但在活动窗外，顺延')
+          if (!(await inActivityWindow(cwd))) {
+            selfWakeSince = null
+            log('自醒到点但在活动区间外，取消（睡眠时段节律停止）')
             return
           }
           if (lastAgent === null || cwd === null) return
