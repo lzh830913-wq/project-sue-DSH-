@@ -88,6 +88,7 @@ export function apply(ctx) {
     let pendingSince = null // 待发时间戳；null=无待发
     let suppressArm = false // v0.1.1：反射发过之后抑制再武装，直到下一个新回合（用户来了才再武装）
     let selfWakeSince = null // v0.2 自醒拍：反射/自醒发过之后的下一次自醒基准时间戳；用户回来即清零重新计
+    let lastFireAt = 0 // v0.1.2：上次发射时间——区分「自己消息的回合」和「用户回来的回合」
 
     log(`已加载（用户停下后反射一次（延迟读设置节，默认 ${DEFAULT_DELAY_MIN} 分钟）；自醒拍间隔读设置节（默认 ${DEFAULT_SELF_INTERVAL_MIN} 分钟，0=关）；夜间 23:30–07:30 静默）`)
 
@@ -110,7 +111,8 @@ export function apply(ctx) {
           log('回合结束 → 反射已武装（约 +' + delayMin + ' 分钟，以设置节为准）')
         }
       } else if (!wasBusy && !nowIdle) {
-        // 新回合开始（用户来了，或其他唤醒插话）→ 撤销待发、解除抑制、自醒重计（在场时不需要自醒）
+        // 新回合开始 → 撤销待发、自醒重计、抑制视来源（v0.1.2：距上次发射 >5 分钟才算「用户真回来了」——
+        // 反射/自醒消息自己引发的回合紧跟着发射发生（秒级），不解除抑制，否则自激循环复活）
         if (pendingSince !== null) {
           pendingSince = null
           log('新回合开始 → 反射已撤销（在场不需要反射）')
@@ -119,8 +121,12 @@ export function apply(ctx) {
           selfWakeSince = Date.now() // v0.2：不取消，重计——你离开后隔一个自醒间隔再属于自己
         }
         if (suppressArm) {
-          suppressArm = false
-          log('新回合开始 → 抑制解除')
+          if (Date.now() - lastFireAt > 5 * 60 * 1000) {
+            suppressArm = false
+            log('新回合开始（距发射 >5 分钟，判定用户回来）→ 抑制解除')
+          } else {
+            log('新回合开始（距发射 <5 分钟，判定为自己消息的回合）→ 抑制保持')
+          }
         }
       }
       wasBusy = !nowIdle
@@ -130,6 +136,7 @@ export function apply(ctx) {
     let delayMin = DEFAULT_DELAY_MIN // v0.3：武装时现读设置（日志显示用），tick 里复核
 
     async function sendWake(kind, text) {
+      lastFireAt = Date.now() // v0.1.2：记发射时刻，供「谁的回合」判定
       const message = createUserMessage({
         content: [{ type: 'text', text }],
         source: { kind: 'plugin:dev-reflex' },
