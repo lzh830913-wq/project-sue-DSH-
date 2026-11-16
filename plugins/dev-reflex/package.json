@@ -1,0 +1,7 @@
+{
+  "name": "@sue/dev-reflex",
+  "version": "0.1.0",
+  "description": "开发模式用户反射 v0.1：用户停下 20 分钟后醒来一次，检查并做掉答应的事——只叫醒，不判断",
+  "type": "module",
+  "main": "index.js"
+}
