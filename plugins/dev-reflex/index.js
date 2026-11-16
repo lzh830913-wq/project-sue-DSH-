@@ -28,9 +28,24 @@ export const inject = ['timer']
 const log = (...args) => console.error('[dev-reflex]', ...args)
 
 const TICK = 30 * 1000
-const DELAY_MS = 20 * 60 * 1000
-const DELAY_MIN = 20
+const DEFAULT_DELAY_MIN = 20
 const HEARTBEAT_MD = 'soul/HEARTBEAT.md'
+
+/** v0.3：反射延迟从 HEARTBEAT.md「## 设置」节现读（`反射延迟: N` 分钟），边界 5–60，读不出走 20。 */
+async function readDelayMin(cwd) {
+  try {
+    const raw = await readFile(join(cwd, HEARTBEAT_MD), 'utf8')
+    const body = parseSections(raw)['设置']
+    if (!body) return DEFAULT_DELAY_MIN
+    const m = body.match(/^反射延迟\s*[:：]\s*(\d{1,2})\s*$/m)
+    if (!m) return DEFAULT_DELAY_MIN
+    const v = parseInt(m[1], 10)
+    if (v < 5 || v > 60) { log(`设置「反射延迟」出界（${v}），走兜底 ${DEFAULT_DELAY_MIN}`); return DEFAULT_DELAY_MIN }
+    return v
+  } catch {
+    return DEFAULT_DELAY_MIN
+  }
+}
 
 /** 夜间静默窗：晚拍后的深夜与凌晨，到点的反射直接取消。 */
 const nightWindow = (d = new Date()) => {
@@ -68,7 +83,7 @@ export function apply(ctx) {
     let pendingSince = null // 待发时间戳；null=无待发
     let suppressArm = false // v0.1.1：反射发过之后抑制再武装，直到下一个新回合（用户来了才再武装）
 
-    log(`已加载（用户停下后 ${DELAY_MIN} 分钟反射一次；tick ${TICK / 1000}s；夜间 23:30–07:30 静默；一次空档至多一次）`)
+    log(`已加载（用户停下后反射一次（延迟读 HEARTBEAT.md 设置节，默认 ${DEFAULT_DELAY_MIN} 分钟）；tick ${TICK / 1000}s；夜间 23:30–07:30 静默；一次空档至多一次）`)
 
     const stopStatus = ctx.on('agent/status', ({ agent, status }) => {
       lastAgent = agent
@@ -86,7 +101,7 @@ export function apply(ctx) {
         } else {
           // 回合结束 → 武装反射（覆盖旧待发：一次空档至多一次）
           pendingSince = Date.now()
-          log('回合结束 → 反射已武装（+' + DELAY_MIN + ' 分钟）')
+          log('回合结束 → 反射已武装（约 +' + delayMin + ' 分钟，以设置节为准）')
         }
       } else if (!wasBusy && !nowIdle) {
         // 新回合开始（用户来了，或其他唤醒插话）→ 撤销待发、解除抑制
@@ -103,16 +118,19 @@ export function apply(ctx) {
       idle = nowIdle
     })
 
+    let delayMin = DEFAULT_DELAY_MIN // v0.3：武装时现读设置（日志显示用），tick 里复核
+
     async function fire() {
       pendingSince = null
       suppressArm = true // v0.1.1：本回合结束后不再武装，直到用户回来
       const clock = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`
+      delayMin = await readDelayMin(cwd)
       let text = await readReflexText(cwd)
       if (text) {
-        text = text.replaceAll('{delay}', String(DELAY_MIN))
+        text = text.replaceAll('{delay}', String(delayMin))
       } else {
         log('HEARTBEAT.md 未读到「反射」小节，用内置兜底')
-        text = `[反射] 距上一轮对话结束已 ${DELAY_MIN} 分钟。检查上下文：有答应了未做、或自己计划要做的事，现在做掉；没有就安静收笔（一句话即可）。判断归你，机制只负责叫醒。`
+        text = `[反射] 距上一轮对话结束已 ${delayMin} 分钟。检查上下文：有答应了未做、或自己计划要做的事，现在做掉；没有就安静收笔（一句话即可）。判断归你，机制只负责叫醒。`
       }
       const message = createUserMessage({
         content: [{ type: 'text', text }],
@@ -122,11 +140,12 @@ export function apply(ctx) {
       log(`反射已发出（${clock}）`)
     }
 
-    function tick() {
+    async function tick() {
       if (pendingSince === null) return
       if (!idle) { pendingSince = null; return } // 保险：不空闲绝不清账
       const now = Date.now()
-      if (now - pendingSince < DELAY_MS) return
+      const delayMs = (await readDelayMin(cwd)) * 60 * 1000 // v0.3：延迟也住设置节，改了即时生效
+      if (now - pendingSince < delayMs) return
       if (nightWindow()) {
         pendingSince = null
         log('反射到点但落在夜间静默窗，取消')
@@ -140,7 +159,7 @@ export function apply(ctx) {
       }
     }
 
-    const stopTick = ctx.timer.interval(tick, TICK)
+    const stopTick = ctx.timer.interval(() => { void tick() }, TICK)
 
     return () => {
       stopStatus()

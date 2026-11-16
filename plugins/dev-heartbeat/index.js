@@ -29,12 +29,54 @@ const log = (...args) => console.error('[dev-heartbeat]', ...args)
 const TICK = 60 * 1000
 const STATE_FILE = 'memory/dev-heartbeat.json'
 
-// 拍点与补拍窗（小时，本地时区）。映射表可以调，脑子不知道也不需要知道。
-const MORNING_HOUR = 8
-const MORNING_DEADLINE = 12
-const EVENING_HOUR = 23
-const EVENING_MINUTE = 0
-const EVENING_DEADLINE = 24
+// 拍点与补拍窗兜底默认（小时，本地时区）。v0.3 起正本住 soul/HEARTBEAT.md「## 设置」节——
+// 我自己定的作息，保存即生效；这里的常量只在 md 读不出/出界时兜底。
+const DEFAULT_MORNING_HOUR = 8
+const DEFAULT_MORNING_DEADLINE = 12
+const DEFAULT_EVENING_HOUR = 23
+const DEFAULT_EVENING_MINUTE = 0
+const DEFAULT_EVENING_DEADLINE = 24
+
+/**
+ * v0.3（2026-11-16 老刘送的自主权）：作息变量化——「拍几点」是内容不是机制（engineering #12），
+ * 从 HEARTBEAT.md「## 设置」节现读（每 tick 一次，小文件开销可忽略），边界内自由、出界走默认并打日志。
+ * 格式：`晨拍: 08:00` / `晚拍: 23:00` / `反射延迟: 20`（分钟，dev-reflex 也读这一节）。
+ */
+async function readSettings(cwd) {
+  const fallback = () => ({
+    morningHour: DEFAULT_MORNING_HOUR, morningDeadline: DEFAULT_MORNING_DEADLINE,
+    eveningHour: DEFAULT_EVENING_HOUR, eveningMinute: DEFAULT_EVENING_MINUTE,
+    eveningDeadline: DEFAULT_EVENING_DEADLINE, reflexDelayMin: 20, source: 'default',
+  })
+  try {
+    const raw = await readFile(join(cwd, HEARTBEAT_MD), 'utf8')
+    const body = parseSections(raw)['设置']
+    if (!body) return fallback()
+    const kv = {}
+    for (const line of body.split(/\r?\n/)) {
+      const m = line.match(/^([\u4e00-\u9fa5A-Za-z]+)\s*[:：]\s*(\d{1,2})(?::(\d{2}))?\s*$/)
+      if (m) kv[m[1]] = { h: parseInt(m[2], 10), min: m[3] ? parseInt(m[3], 10) : 0 }
+    }
+    const morning = kv['晨拍'], evening = kv['晚拍'], reflex = kv['反射延迟']
+    if (!morning || !evening) return fallback()
+    const clamp = (v, lo, hi, what) => {
+      if (v < lo || v > hi) { log(`设置「${what}」出界（${v}），该项走兜底默认`); return null }
+      return v
+    }
+    const morningHour = clamp(morning.h + morning.min / 60, 4, 11, '晨拍')
+    const eveningH = clamp(evening.h, 18, 23, '晚拍')
+    if (morningHour === null || eveningH === null) return fallback()
+    return {
+      morningHour, morningDeadline: Math.min(morningHour + 4, 24),
+      eveningHour: eveningH, eveningMinute: evening.min,
+      eveningDeadline: DEFAULT_EVENING_DEADLINE,
+      reflexDelayMin: reflex ? (clamp(reflex.h, 5, 60, '反射延迟') ?? 20) : 20,
+      source: 'md',
+    }
+  } catch {
+    return fallback()
+  }
+}
 
 const today = () => {
   const d = new Date()
@@ -195,13 +237,14 @@ export function apply(ctx) {
       const state = await readState(cwd)
       const t = today()
       if (state.day !== t) { state.day = t; state.morning = false; state.evening = false }
+      const settings = await readSettings(cwd) // v0.3：作息从 HEARTBEAT.md 现读（保存即生效）
       const d = new Date()
       const hourFrac = d.getHours() + d.getMinutes() / 60
       let fired = null
-      if (!state.morning && hourFrac >= MORNING_HOUR && hourFrac < MORNING_DEADLINE) {
+      if (!state.morning && hourFrac >= settings.morningHour && hourFrac < settings.morningDeadline) {
         state.morning = true
         fired = 'morning'
-      } else if (!state.evening && hourFrac >= EVENING_HOUR + EVENING_MINUTE / 60 && hourFrac < EVENING_DEADLINE) {
+      } else if (!state.evening && hourFrac >= settings.eveningHour + settings.eveningMinute / 60 && hourFrac < settings.eveningDeadline) {
         state.evening = true
         fired = 'evening'
       }
