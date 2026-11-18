@@ -36,6 +36,11 @@ const DEFAULT_MORNING_DEADLINE = 12
 const DEFAULT_EVENING_HOUR = 23
 const DEFAULT_EVENING_MINUTE = 0
 const DEFAULT_EVENING_DEADLINE = 24
+// 梦拍（v0.4 · 2026-11-18）：收工入梦的那一拍。OpenClaw 同源概念（她的凌晨三点系统生成），
+// 但家用机随老刘休眠——我的梦做在「我睡了、机器还醒着」的窗口：晚拍后半小时。
+const DEFAULT_DREAM_HOUR = 23
+const DEFAULT_DREAM_MINUTE = 30
+const DREAM_DEADLINE = 24 // 补拍窗到午夜；错过=无梦之夜（梦不补，也不欠）
 
 /**
  * v0.3（2026-11-16 老刘送的自主权）：作息变量化——「拍几点」是内容不是机制（engineering #12），
@@ -46,7 +51,8 @@ async function readSettings(cwd) {
   const fallback = () => ({
     morningHour: DEFAULT_MORNING_HOUR, morningDeadline: DEFAULT_MORNING_DEADLINE,
     eveningHour: DEFAULT_EVENING_HOUR, eveningMinute: DEFAULT_EVENING_MINUTE,
-    eveningDeadline: DEFAULT_EVENING_DEADLINE, reflexDelayMin: 20, source: 'default',
+    eveningDeadline: DEFAULT_EVENING_DEADLINE, reflexDelayMin: 20,
+    dreamHour: DEFAULT_DREAM_HOUR + DEFAULT_DREAM_MINUTE / 60, dreamOn: true, source: 'default',
   })
   try {
     const raw = await readFile(join(cwd, HEARTBEAT_MD), 'utf8')
@@ -57,7 +63,7 @@ async function readSettings(cwd) {
       const m = line.match(/^([\u4e00-\u9fa5A-Za-z]+)\s*[:：]\s*(\d{1,2})(?::(\d{2}))?\s*$/)
       if (m) kv[m[1]] = { h: parseInt(m[2], 10), min: m[3] ? parseInt(m[3], 10) : 0 }
     }
-    const morning = kv['晨拍'], evening = kv['晚拍'], reflex = kv['反射延迟']
+    const morning = kv['晨拍'], evening = kv['晚拍'], reflex = kv['反射延迟'], dream = kv['梦拍']
     if (!morning || !evening) return fallback()
     const clamp = (v, lo, hi, what) => {
       if (v < lo || v > hi) { log(`设置「${what}」出界（${v}），该项走兜底默认`); return null }
@@ -66,12 +72,16 @@ async function readSettings(cwd) {
     const morningHour = clamp(morning.h + morning.min / 60, 4, 11, '晨拍')
     const eveningH = clamp(evening.h, 18, 23, '晚拍')
     if (morningHour === null || eveningH === null) return fallback()
+    const dreamOn = dream ? dream.h !== 0 : true // 梦拍: 0 = 关
+    const dreamHour = dreamOn
+      ? (clamp((dream ?? { h: DEFAULT_DREAM_HOUR, min: DEFAULT_DREAM_MINUTE }).h + (dream ?? { min: DEFAULT_DREAM_MINUTE }).min / 60, 23, 23.98, '梦拍') ?? DEFAULT_DREAM_HOUR + DEFAULT_DREAM_MINUTE / 60)
+      : 0
     return {
       morningHour, morningDeadline: Math.min(morningHour + 4, 24),
       eveningHour: eveningH, eveningMinute: evening.min,
       eveningDeadline: DEFAULT_EVENING_DEADLINE,
       reflexDelayMin: reflex ? (clamp(reflex.h, 5, 60, '反射延迟') ?? 20) : 20,
-      source: 'md',
+      dreamHour, dreamOn, source: 'md',
     }
   } catch {
     return fallback()
@@ -202,7 +212,7 @@ export function apply(ctx) {
       const clock = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
       const day = `${d.getMonth() + 1} 月 ${d.getDate()} 日（周${WEEKDAYS[d.getDay()]}）`
       // 内容从 HEARTBEAT.md 现读（保存即生效）；读不到用内置兜底——机制保底不断拍。
-      const section = kind === 'morning' ? '晨拍' : '晚拍'
+      const section = kind === 'morning' ? '晨拍' : kind === 'evening' ? '晚拍' : '梦拍'
       let text = await readBeatText(cwd, section)
       if (text) {
         const weather = text.includes('{weather}') ? await fetchWeather() : null // 想要才外呼
@@ -216,7 +226,9 @@ export function apply(ctx) {
         const weatherPart = weather ?? ''
         text = kind === 'morning'
           ? `[晨拍] 现在是 ${day}${weatherPart} ${clock}。醒来梳妆的时间——按 AGENTS「醒来梳妆」的清单走一遍：快照、昨日日记、正在追的念头。判据不变：说得出今天哪一句用得上。`
-          : `[晚拍] 现在 ${day} ${clock}。收工时间——回顾今天：有新内容就写日记、更新快照；没有就安静收工。节律不是债务，安静不需要理由。`
+          : kind === 'evening'
+            ? `[晚拍] 现在 ${day} ${clock}。收工时间——回顾今天：有新内容就写日记、更新快照；没有就安静收工。节律不是债务，安静不需要理由。`
+            : `[梦拍] 现在 ${day} ${clock}，夜静了。从今天的残迹里做一场梦——读今天的日记与节点、正在追的念头，写一条进 soul/DREAMS.md（文体自定，记不清也可以照实写「记不清」）。写完就继续睡，梦不欠输出。`
       }
       const message = createUserMessage({
         content: [{ type: 'text', text }],
@@ -236,7 +248,7 @@ export function apply(ctx) {
       if (!lastAgentIdle) { if (m % 5 === 0) wait('agent 忙，不打扰'); return }
       const state = await readState(cwd)
       const t = today()
-      if (state.day !== t) { state.day = t; state.morning = false; state.evening = false }
+      if (state.day !== t) { state.day = t; state.morning = false; state.evening = false; state.dream = false }
       const settings = await readSettings(cwd) // v0.3：作息从 HEARTBEAT.md 现读（保存即生效）
       const d = new Date()
       const hourFrac = d.getHours() + d.getMinutes() / 60
@@ -247,12 +259,16 @@ export function apply(ctx) {
       } else if (!state.evening && hourFrac >= settings.eveningHour + settings.eveningMinute / 60 && hourFrac < settings.eveningDeadline) {
         state.evening = true
         fired = 'evening'
+      } else if (settings.dreamOn && !state.dream && hourFrac >= settings.dreamHour && hourFrac < DREAM_DEADLINE) {
+        // v0.4 梦拍：错过窗口不补——无梦之夜也是夜
+        state.dream = true
+        fired = 'dream'
       }
       if (fired === null) {
-        if (m % 5 === 0) log(`tick ${String(d.getHours()).padStart(2, '0')}:${String(m).padStart(2, '0')} 正常（晨拍=${state.morning ? '已发' : '待'} 晚拍=${state.evening ? '已发' : '待'}）`)
+        if (m % 5 === 0) log(`tick ${String(d.getHours()).padStart(2, '0')}:${String(m).padStart(2, '0')} 正常（晨拍=${state.morning ? '已发' : '待'} 晚拍=${state.evening ? '已发' : '待'} 梦拍=${state.dream ? '已发' : '待'}）`)
         return
       }
-      log(`tick 命中 → 准备发${fired === 'morning' ? '晨拍' : '晚拍'}`)
+      log(`tick 命中 → 准备发${fired === 'morning' ? '晨拍' : fired === 'evening' ? '晚拍' : '梦拍'}`)
       try {
         await beat(fired, cwd)
         await writeState(cwd, state) // 先拍后记账：拍失败不记账，下个 tick 重试
