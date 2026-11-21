@@ -18,7 +18,7 @@
  * v0.1 边界（老刘 11-16 拍板）：只做「用户停下后 20 分钟醒来一次」；
  * 不做 30/60 分钟日常节律（那是心跳的领地）、不循环、不叠加——一次空档至多一次。
  */
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
@@ -116,6 +116,15 @@ export function apply(ctx) {
 
     log(`已加载（用户停下后反射一次（延迟读设置节，默认 ${DEFAULT_DELAY_MIN} 分钟）；自醒拍间隔读设置节（默认 ${DEFAULT_SELF_INTERVAL_MIN} 分钟，0=关）；夜间 23:30–07:30 静默）`)
 
+    // v0.3.3（2026-11-21 立，preflight v2 配套）：开工印记——加载成功即写 memory/boot-dev-reflex.json。
+    // 「手术台上的人没法给自己验脉」的解法：让插件自己在体检表上签个到，preflight 读印记=看得见它起没起来。
+    // 空 cwd 时等挂钩工作区后再补写。
+    const writeBootMark = async (root) => {
+      try {
+        await writeFile(join(root, 'memory', 'boot-dev-reflex.json'), JSON.stringify({ at: new Date().toISOString(), pid: process.pid }, null, 2), 'utf8')
+      } catch { /* 印记失败不阻塞插件 */ }
+    }
+
     const stopStatus = ctx.on('agent/status', async ({ agent, status }) => {
       lastAgent = agent
       const nowIdle = status === 'idle'
@@ -124,6 +133,7 @@ export function apply(ctx) {
         if (agentCwd !== null) {
           cwd = agentCwd
           log('已挂钩工作区: ' + cwd)
+          void writeBootMark(cwd) // v0.3.3：开工印记（有了工作区就签个到，preflight 读）
         }
       }
       if (wasBusy && nowIdle) {

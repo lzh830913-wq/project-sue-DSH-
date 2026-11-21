@@ -197,6 +197,14 @@ export function apply(ctx) {
 
     log('已加载（一天两拍：晨 08:00 / 晚 23:00；tick 60s；状态文件 memory/dev-heartbeat.json）')
 
+    // v0.4.1（2026-11-21 · preflight v2 配套）：开工印记——加载成功即写 memory/boot-dev-heartbeat.json，
+    // 让「它起没起来」变成机器可查（手术台上的人没法给自己验脉）。
+    const writeBootMark = async (root) => {
+      try {
+        await writeFile(join(root, 'memory', 'boot-dev-heartbeat.json'), JSON.stringify({ at: new Date().toISOString(), pid: process.pid }, null, 2), 'utf8')
+      } catch { /* 印记失败不阻塞插件 */ }
+    }
+
     const stopStatus = ctx.on('agent/status', ({ agent, status }) => {
       lastAgent = agent
       lastAgentIdle = status === 'idle'
@@ -204,6 +212,7 @@ export function apply(ctx) {
       if (cwd === null && agentCwd !== null) {
         cwd = agentCwd
         log('已挂钩工作区: ' + cwd + '（agent: ' + (lastAgentIdle ? 'idle' : 'busy') + '）')
+        void writeBootMark(cwd) // v0.4.1：开工印记
       }
     })
 

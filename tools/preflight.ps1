@@ -43,5 +43,23 @@ foreach ($n in $names) {
   Write-Host "[OK] $n"
 }
 
+# v2 (2026-11-21): boot marks -- did the plugin actually LOAD (not just exist on disk)?
+# Each @sue plugin writes memory/boot-<name>.json on successful apply().
+# A stale mark (>24h) means it has not loaded since; a missing mark means unknown/never logged.
+$bootRoot = 'I:\PJ sue\memory'
+foreach ($n in $names) {
+  $mark = Join-Path $bootRoot "boot-$n.json"
+  if (-not (Test-Path $mark)) {
+    Write-Host "[NO-MARK] $n has no boot mark (plugin may not write one, or never loaded since marker feature)"
+    continue
+  }
+  $age = (Get-Date) - (Get-Item $mark).LastWriteTime
+  if ($age.TotalHours -gt 24) {
+    Write-Host "[STALE] $n last boot mark is $([math]::Round($age.TotalHours,1))h old -- check whether it loaded on the latest start"
+  } else {
+    Write-Host "[LOADED] $n boot mark $([math]::Round($age.TotalMinutes,0))min ago"
+  }
+}
+
 if ($fail -gt 0) { Write-Host ""; Write-Host "$fail problem(s) -- fix before restart."; exit 1 }
 Write-Host ""; Write-Host "ALL GREEN. Safe to restart."
