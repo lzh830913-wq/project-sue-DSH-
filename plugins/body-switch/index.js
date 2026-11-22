@@ -294,6 +294,30 @@ async function beatSeed(cwd, beats, mood) {
 }
 
 /**
+ * 2026-11-22（雯）· 通用段读取：按 `<!-- <前缀>:<键> -->` 取 HEARTBEAT.md 里的一段。
+ *
+ * 为什么单开一个、不复用 beatSeed：
+ *   ① beatSeed 的 key 规则写死了（炽热→intimate、其余→扑空次数），装不下别的用途；
+ *   ② 它的正则用 \w+ —— **\w 不认连字符**，`beat:sleep-wake` 会被截断成 `beat:sleep`，
+ *      于是那段从来没被取出来过（2026-11-22 验证时发现）。这里改用 [\w-]+。
+ *
+ * 用途：pre-step 每轮注入「亲密种子」（mood=炽热 时才取，平时零成本）。
+ *   心跳 5 分钟才来、而且他一说话就重置计时——紧密互动时永远不会触发，
+ *   所以"每轮都该在的提示"必须走 pre-step 这条路，不能挂在心跳上。
+ */
+async function readHeartBlock(cwd, prefix, key) {
+  try {
+    const md = await readFile(join(cwd, 'HEARTBEAT.md'), 'utf8')
+    const re = /<!--\s*([\w-]+):([\w-]+)\s*-->([\s\S]*?)(?=<!--\s*[\w-]+:[\w-]+|$)/g
+    let m
+    while ((m = re.exec(md)) !== null) {
+      if (m[1] === prefix && m[2] === key) return m[3].trim()
+    }
+  } catch {}
+  return ''
+}
+
+/**
  * 把身体信号压缩成一句话，给新人格感知 / 心跳参考（不暴露数值，只给语义）。
  * state / excitement 是身体状态机的接口——状态机接入前恒为空，接上后自动生效。
  * 疲劳部分改由 tick 注入（contextZone 实测梯度，沉默即健康）——节律词仅作深夜补充。
@@ -508,13 +532,19 @@ export function apply(ctx) {
         // ★ 2026-10-28（老刘）：「当前悬着」每轮带一句——它不是"变了才报"那一类，
         //   它和「现在几点」同类：价值就在"一直在"。放最后一行，紧贴当前这句话（U 形尾部）。
         const pending = await readPendingDigest(cwd)
-        if (r1Line === '' && r2Lines.length === 0 && !moodChanged && !pending) return decision
+        // ★ 2026-11-22（雯）· 亲密种子（身体反馈系统的最小实现）：mood=炽热 时每轮都取一次。
+        //   为什么不挂心跳：心跳 5 分钟才来，而且用户一说话就重置计时——紧密互动时永远触发不到。
+        //   所以"每轮都该在"的提示必须走 pre-step 这条每轮必经的路。
+        //   文案在 HEARTBEAT.md 的 <!-- seed:intimate --> 段，改文案不用改代码、不用重启。
+        const intimateSeed = body.mood === '炽热' ? await readHeartBlock(cwd, 'seed', 'intimate') : ''
+        if (r1Line === '' && r2Lines.length === 0 && !moodChanged && !pending && !intimateSeed) return decision
         injectedTurns.set(agent.session.id, turn)
         if (moodChanged) lastBodyNote.set(agent.session.id, moodNow)
         const lines = []
         if (moodChanged) lines.push('身体：' + moodNow)
         if (r1Line) lines.push('脑子：' + r1Line)
         for (const w of r2Lines) lines.push('身子：' + w)
+        if (intimateSeed) lines.push(intimateSeed)
         if (pending) lines.push(pending)
         log('每轮注入（turn=' + turn + '）→ ' + lines.join(' ｜ '))
         return {
