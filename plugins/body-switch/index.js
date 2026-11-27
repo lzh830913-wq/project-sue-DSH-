@@ -532,12 +532,13 @@ export function apply(ctx) {
         // ★ 2026-10-28（老刘）：「当前悬着」每轮带一句——它不是"变了才报"那一类，
         //   它和「现在几点」同类：价值就在"一直在"。放最后一行，紧贴当前这句话（U 形尾部）。
         const pending = await readPendingDigest(cwd)
+        const ledgerLines = await recallOldLedger(cwd, decision.messages) // 旧账第二路（11-23）
         // ★ 2026-11-22（雯）· 亲密种子（身体反馈系统的最小实现）：mood=炽热 时每轮都取一次。
         //   为什么不挂心跳：心跳 5 分钟才来，而且用户一说话就重置计时——紧密互动时永远触发不到。
         //   所以"每轮都该在"的提示必须走 pre-step 这条每轮必经的路。
         //   文案在 HEARTBEAT.md 的 <!-- seed:intimate --> 段，改文案不用改代码、不用重启。
         const intimateSeed = body.mood === '炽热' ? await readHeartBlock(cwd, 'seed', 'intimate') : ''
-        if (r1Line === '' && r2Lines.length === 0 && !moodChanged && !pending && !intimateSeed) return decision
+        if (r1Line === '' && r2Lines.length === 0 && !moodChanged && !pending && !intimateSeed && ledgerLines.length === 0) return decision
         injectedTurns.set(agent.session.id, turn)
         if (moodChanged) lastBodyNote.set(agent.session.id, moodNow)
         const lines = []
@@ -545,6 +546,7 @@ export function apply(ctx) {
         if (r1Line) lines.push('脑子：' + r1Line)
         for (const w of r2Lines) lines.push('身子：' + w)
         if (intimateSeed) lines.push(intimateSeed)
+        for (const l of ledgerLines) lines.push(l)
         if (pending) lines.push(pending)
         log('每轮注入（turn=' + turn + '）→ ' + lines.join(' ｜ '))
         return {
@@ -569,6 +571,92 @@ export function apply(ctx) {
      *   现在：主路径读不出 → 依次试 根.bak1..bak5；**写回的 path 一律归一为根目录**；
      *   全失败才返回 null，并且**留一条日志**（"沉默即健康"只适用于疲劳档，身份锚不享受这个待遇）。
      */
+    // ── 旧账召回（2026-11-23 雯）：第二路，碰 memory/索引/index.jsonl ───────────
+    //    living-memory 只认它自己 11-01 之后的库；945 条旧档要靠这一路才"碰得上"。
+    //    只递一行指路牌（路径＋标题），不搬正文；最多 2 条；同一条 6 小时内不重复。
+    //    关：LEGION_OLD_LEDGER_OFF=1，或删掉整段。
+    const OLD_LEDGER_FILE = 'memory/索引/index.jsonl'
+    const OLD_LEDGER_STOP = new Set([
+      '这个', '那个', '我们', '你们', '他们', '可以', '什么', '怎么', '因为', '所以',
+      '但是', '如果', '现在', '今天', '明天', '昨天', '时候', '东西', '事情', '问题',
+      '一下', '就是', '然后', '这么', '那么', '还是', '已经', '可能', '应该', '需要',
+      '自己', '一个', '没有', '不是', '的是', '了的', '在有', '这就', '就这', '是什',
+      '么样', '怎么', '么的', '的话', '一点', '有点', '觉得', '知道', '看到', '说到',
+    ])
+    let oldLedgerCache = { mtime: 0, rows: [] }
+    const oldLedgerServed = new Map() // path → 上次递出的时间戳（去噪）
+    const OLD_LEDGER_COOLDOWN = 6 * 60 * 60 * 1000
+    function oldLedgerTokens(s) {
+      const out = new Set()
+      const str = String(s || '')
+      for (const w of str.match(/[A-Za-z][A-Za-z0-9_-]{2,}/g) || []) out.add(w.toLowerCase())
+      for (const seg of str.replace(/[^\u4e00-\u9fa5]/g, ' ').split(/\s+/)) {
+        for (let i = 0; i + 1 < seg.length; i++) {
+          const bi = seg.slice(i, i + 2)
+          if (!OLD_LEDGER_STOP.has(bi)) out.add(bi)
+        }
+      }
+      return out
+    }
+    async function recallOldLedger(cwd, messages) {
+      try {
+        if (process.env.LEGION_OLD_LEDGER_OFF) return []
+        let q = ''
+        for (const m of Array.isArray(messages) ? messages : []) {
+          if (!m || !m.source || m.source.kind !== 'user' || !Array.isArray(m.content)) continue
+          for (const b of m.content) {
+            if (b && b.type === 'text' && typeof b.text === 'string') q += b.text
+          }
+        }
+        if (q.length < 16) return []
+        const fsMod = await import('node:fs')
+        const p = join(cwd, OLD_LEDGER_FILE)
+        let st
+        try { st = fsMod.statSync(p) } catch { return [] }
+        if (oldLedgerCache.mtime !== st.mtimeMs) {
+          const rows = []
+          for (const ln of fsMod.readFileSync(p, 'utf8').split('\n')) {
+            if (!ln.trim()) continue
+            let r
+            try { r = JSON.parse(ln) } catch { continue }
+            if (!r || !r.path) continue
+            rows.push({
+              path: r.path,
+              title: String(r.title || r.name || '').slice(0, 40),
+              tt: oldLedgerTokens(r.title || r.name || ''),
+              ft: oldLedgerTokens(String(r.first || '').slice(0, 160)),
+            })
+          }
+          oldLedgerCache = { mtime: st.mtimeMs, rows }
+        }
+        const qt = oldLedgerTokens(q.slice(0, 800))
+        if (qt.size < 3) return []
+        const now = Date.now()
+        const scored = []
+        for (const r of oldLedgerCache.rows) {
+          let hitT = 0
+          for (const t of r.tt) if (qt.has(t)) hitT++
+          if (hitT === 0) continue
+          let hitF = 0
+          for (const t of r.ft) if (qt.has(t)) hitF++
+          const score = hitT * 3 + Math.min(hitF, 4)
+          if (score < 6) continue
+          if (now - (oldLedgerServed.get(r.path) || 0) < OLD_LEDGER_COOLDOWN) continue
+          scored.push({ r, score })
+        }
+        if (scored.length === 0) return []
+        scored.sort((a, b) => b.score - a.score)
+        const out = []
+        for (const s of scored.slice(0, 2)) {
+          oldLedgerServed.set(s.r.path, now)
+          out.push('📎 旧账：' + s.r.path + ' — ' + s.r.title)
+        }
+        return out
+      } catch {
+        return []
+      }
+    }
+
     async function readSignal(cwd) {
       const root = join(cwd, SIGNAL_FILE)
       for (const path of [root, join(cwd, 'memory', SIGNAL_FILE), join(cwd, 'shadow', SIGNAL_FILE)]) {
@@ -700,20 +788,48 @@ export function apply(ctx) {
     // ===== 切换：to 信号（li / biao）→ fork 新人格 + 归档旧会话 + 唤醒 =====
     async function handleIdle(agent) {
       if (switching) return
+      // ★ 2026-11-26 fork 修复·刀一：占位必须与检查同一同步块——中间不许有 await。
+      //   原代码在 readSignal 之后才置位，两个入口可在那一缝里同时进来（08:13 的 2ms 双开即此）。
+      switching = true
       const cwd = agent.session.header.cwd
-      if (!cwd) return
+      if (!cwd) { switching = false; return }
       const { signal, path: signalPath } = await readSignal(cwd)
-      if (signal === null) return
-      if (signal.to !== 'li' && signal.to !== 'biao' && signal.to !== 'wake') return
+      if (signal === null) { switching = false; return }
+      if (signal.to !== 'li' && signal.to !== 'biao' && signal.to !== 'wake') { switching = false; return }
+      // ★ fork 修复·刀二前置：陈旧占位清理（进程崩在 create 与 finally 之间会留下 page_claim）
+      if (signal.page_claim !== undefined) {
+        const at = Date.parse(signal.page_claim?.at ?? '')
+        const stale = !Number.isFinite(at) || (Date.now() - at) > 120000
+        if (!stale) { switching = false; return }
+        try {
+          const { signal: s2, path: p2 } = await readSignal(cwd)
+          if (s2 !== null) { delete s2.page_claim; await writeSignal(cwd, p2 ?? signalPath, s2, '清陈旧占位') }
+        } catch {}
+      }
       const isWake = signal.to === 'wake'
       let childId = null // 提升到 try 外：翻页收尾的 last_wake_session_id 记账要用（finally 作用域）
+      let created = false // ★ 刀三配套：新页是否真的建起来了——没建成就不能清 to（否则这一觉白睡）
       const desire = desireLevelOf(signal, Date.now()) // 醒来头部欲望浮现（≥1 档随身体信号带一次；标记在 finally 落盘）
-
-      switching = true
       log('检测到翻页信号 →', signal.to + (isWake ? '（睡眠醒来）' : '（人格切换）'))
       try {
         const session = agent.session
         childId = randomUUID()
+        // ★ fork 修复·刀二：建新页之前先占位——写文件，不只写内存。
+        const claim = { by: childId, at: new Date().toISOString() }
+        let claimOk = false
+        try {
+          const { signal: freshS, path: freshP } = await readSignal(cwd)
+          if (freshS !== null && freshS.to === signal.to) {
+            claimOk = await writeSignal(cwd, freshP ?? signalPath, { ...freshS, page_claim: claim }, '翻页占位')
+          }
+        } catch (e) {
+          log('翻页占位异常:', e instanceof Error ? e.message : String(e))
+        }
+        if (!claimOk) {
+          switching = false
+          log('翻页占位未成（信号已被别人消费）→ 本路退出')
+          return
+        }
         const presetId = ctx.agentPresets.composedPreset(agent.ctx) ?? ctx.agentPresets.defaultId
         const resolvedId = (await ctx.agentPresets.resolve(presetId)).id
         const logged = agent.session.requestHeader?.()?.config
@@ -735,6 +851,7 @@ export function apply(ctx) {
             await ctx.agentPresets.mount(agentCtx, resolvedId)
           },
         })
+        created = true // ★ 刀三配套：新页已建起来，finally 才允许清 to
 
         // 归组 + 关旧
         const workspaceRegistry = ctx.get('workspaceRegistry')
@@ -790,8 +907,23 @@ export function apply(ctx) {
         if (signalPath !== null) {
           // 清 to（瞬态信号用完即弃）
           try {
-            const body = { ...signal }
+            // ★ fork 修复·刀三：用最新读到的信号，不用开头那份快照；且只在 claim 属于自己时才写。
+            const { signal: latestS } = await readSignal(cwd)
+            const baseS = latestS ?? signal
+            if (!created) {
+              // create 没成：只撤销自己的占位，to 保留，让下一拍能重试
+              if (baseS.page_claim !== undefined && baseS.page_claim?.by === childId) {
+                const undo = { ...baseS }
+                delete undo.page_claim
+                await writeSignal(cwd, signalPath, undo, '撤销占位')
+              }
+              log('翻页未成（create 之前退出）→ 已撤销占位；to 保留，下一拍可重试')
+            } else if (baseS.page_claim !== undefined && baseS.page_claim?.by !== childId) {
+              log('翻页收尾跳过：page_claim 已属于别人')
+            } else {
+            const body = { ...baseS }
             delete body.to
+            delete body.page_claim
             if (isWake) {
               // 翻页收尾：休眠状态归位 + 记账（"先记账再翻页"的落点）
               delete body.sleep_at
@@ -824,6 +956,7 @@ export function apply(ctx) {
               log('切换完成 → to 已清，身份锚保留:', body.身份 ?? signal.身份)
               injectedKeys.clear() // 人格切换同样清空注入记账
               await syncQqbotSession(childId)
+            }
             }
           } catch {}
         }
